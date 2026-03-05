@@ -3,9 +3,29 @@ import mss
 import pytesseract
 import pyttsx3
 from PIL import Image
-from PyQt5.QtWidgets import QApplication, QWidget, QPushButton
+from PyQt5.QtWidgets import QApplication, QWidget, QMenuBar, QAction
 from PyQt5.QtCore import Qt, QTimer, QRect
-from PyQt5.QtGui import QPainter, QPen, QColor, QCursor
+from PyQt5.QtGui import QPainter, QPen, QColor, QCursor, QIcon, QPixmap, QFont
+
+
+def create_app_icon():
+    pixmap = QPixmap(256, 256)
+    pixmap.fill(Qt.transparent)
+
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(QColor(220, 20, 60))
+    painter.drawRoundedRect(16, 16, 224, 224, 48, 48)
+
+    painter.setPen(QColor(255, 255, 255))
+    font = QFont("Arial", 128, QFont.Bold)
+    painter.setFont(font)
+    painter.drawText(pixmap.rect(), Qt.AlignCenter, "S2")
+    painter.end()
+
+    return QIcon(pixmap)
 
 
 def speak(text):
@@ -25,11 +45,9 @@ class Overlay(QWidget):
 
         self.setGeometry(300, 200, 600, 250)
 
-        self.setWindowFlags(
-            Qt.FramelessWindowHint |
-            Qt.WindowStaysOnTopHint |
-            Qt.Tool
-        )
+        self.base_window_flags = Qt.FramelessWindowHint | Qt.Window
+        self.stay_on_top = True
+        self.apply_window_flags()
 
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setStyleSheet("background: transparent;")
@@ -45,11 +63,8 @@ class Overlay(QWidget):
         self.timer = QTimer()
         self.timer.timeout.connect(self.capture_area)
 
-        # Button
-        self.button = QPushButton("Start", self)
-        self.button.move(15, 15)
-        self.button.clicked.connect(self.toggle_capture)
-        self.button.setStyleSheet("background: rgba(255,255,255,200);")
+        self.start_action = None
+        self.stop_action = None
 
     # ================= DRAW =================
     def paintEvent(self, event):
@@ -120,16 +135,46 @@ class Overlay(QWidget):
     def mouseReleaseEvent(self, event):
         self.resizing = None
 
+    def apply_window_flags(self):
+        flags = self.base_window_flags
+        if self.stay_on_top:
+            flags |= Qt.WindowStaysOnTopHint
+        was_visible = self.isVisible()
+        self.setWindowFlags(flags)
+        if was_visible:
+            self.show()
+            if self.stay_on_top:
+                self.raise_()
+
+    def set_stay_on_top(self, enabled):
+        self.stay_on_top = enabled
+        self.apply_window_flags()
+
+    def bind_menu_actions(self, start_action, stop_action):
+        self.start_action = start_action
+        self.stop_action = stop_action
+        self.update_capture_actions()
+
     # ================= START / STOP =================
-    def toggle_capture(self):
+    def start_capture(self):
+        if self.running:
+            return
+        self.running = True
+        self.timer.start(2000)
+        self.update_capture_actions()
+
+    def stop_capture(self):
         if not self.running:
-            self.running = True
-            self.button.setText("Stop")
-            self.timer.start(2000)
-        else:
-            self.running = False
-            self.button.setText("Start")
-            self.timer.stop()
+            return
+        self.running = False
+        self.timer.stop()
+        self.update_capture_actions()
+
+    def update_capture_actions(self):
+        if self.start_action is None or self.stop_action is None:
+            return
+        self.start_action.setEnabled(not self.running)
+        self.stop_action.setEnabled(self.running)
 
     # ================= OCR CAPTURE =================
     def capture_area(self):
@@ -160,6 +205,32 @@ class Overlay(QWidget):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+    app_icon = create_app_icon()
+    app.setWindowIcon(app_icon)
     overlay = Overlay()
+    overlay.setWindowIcon(app_icon)
+
+    menu_bar = QMenuBar()
+    menu_bar.setNativeMenuBar(True)
+    options_menu = menu_bar.addMenu("Options")
+    start_action = QAction("Start", menu_bar)
+    stop_action = QAction("Stop", menu_bar)
+    stay_on_top_action = QAction("Stay On Top", menu_bar)
+    stay_on_top_action.setCheckable(True)
+    stay_on_top_action.setChecked(True)
+    close_action = QAction("Close App", menu_bar)
+    start_action.triggered.connect(overlay.start_capture)
+    stop_action.triggered.connect(overlay.stop_capture)
+    stay_on_top_action.toggled.connect(overlay.set_stay_on_top)
+    close_action.triggered.connect(app.quit)
+    options_menu.addAction(start_action)
+    options_menu.addAction(stop_action)
+    options_menu.addAction(stay_on_top_action)
+    options_menu.addAction(close_action)
+    overlay.bind_menu_actions(start_action, stop_action)
+
+    # Keep a Python reference so the native menu bar is not garbage-collected.
+    app.menu_bar = menu_bar
+
     overlay.show()
     sys.exit(app.exec_())
