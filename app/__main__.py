@@ -12,6 +12,11 @@ from PyQt5.QtWidgets import QApplication, QWidget, QMenuBar, QAction, QInputDial
 from PyQt5.QtCore import Qt, QTimer, QRect, QPointF
 from PyQt5.QtGui import QPainter, QPen, QColor, QCursor, QIcon, QPixmap, QFont
 
+try:
+    import pyttsx3
+except Exception:
+    pyttsx3 = None
+
 
 def create_app_icon():
     pixmap = QPixmap(256, 256)
@@ -38,28 +43,80 @@ class TTSWorker(threading.Thread):
         super().__init__(daemon=True)
         self.text_queue = queue.Queue()
         self.stop_token = object()
-        self.voice = self._detect_vietnamese_voice()
         self.base_rate_wpm = max(120, int(base_rate_wpm))
         self.rate_multiplier = max(0.1, float(rate_multiplier))
         self.config_lock = threading.Lock()
-        self.proc_lock = threading.Lock()
+        self.runtime_lock = threading.Lock()
         self.current_proc = None
+        self.voice_id = None
+        self.use_pyttsx3 = False
 
-    def _detect_vietnamese_voice(self):
+        if pyttsx3 is not None:
+            try:
+                probe_engine = pyttsx3.init(driverName="nsss")
+                self.voice_id = self._detect_pyttsx3_voice(probe_engine)
+                probe_engine.stop()
+                self.use_pyttsx3 = True
+                print("TTS backend: pyttsx3")
+            except Exception as err:
+                print(f"TTS disabled: pyttsx3 init failed: {err}")
+                self.use_pyttsx3 = False
+
+    def _detect_pyttsx3_voice(self, engine):
+        voice_id = None
+        for voice in engine.getProperty("voices"):
+            fields = [str(getattr(voice, "id", "")), str(getattr(voice, "name", ""))]
+            langs = getattr(voice, "languages", [])
+            fields.extend(str(lang) for lang in langs)
+            data = " ".join(fields).lower()
+
+            if voice_id is None and any(token in data for token in ["vi_vn", "vietnam", "vietnamese"]):
+                voice_id = voice.id
+        return voice_id
+
+    def _speak_with_pyttsx3(self, text):
+        script = (
+            "import sys,pyttsx3\n"
+            "text=sys.argv[1]\n"
+            "voice=sys.argv[2]\n"
+            "rate=int(sys.argv[3])\n"
+            "engine=pyttsx3.init(driverName='nsss')\n"
+            "if voice!='__NONE__':\n"
+            "    engine.setProperty('voice',voice)\n"
+            "engine.setProperty('rate',rate)\n"
+            "engine.say(text)\n"
+            "engine.runAndWait()\n"
+            "engine.stop()\n"
+        )
+        cmd = [
+            sys.executable,
+            "-c",
+            script,
+            text,
+            self.voice_id or "__NONE__",
+            str(self.get_rate_wpm()),
+        ]
         try:
-            result = subprocess.run(
-                ["say", "-v", "?"],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            for line in result.stdout.splitlines():
-                lower = line.lower()
-                if "vi_vn" in lower or "vietnam" in lower:
-                    return line.split()[0]
-        except Exception:
-            return None
-        return None
+            with self.runtime_lock:
+                self.current_proc = subprocess.Popen(cmd)
+            self.current_proc.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            print("TTS error (pyttsx3): timeout")
+            with self.runtime_lock:
+                if self.current_proc and self.current_proc.poll() is None:
+                    try:
+                        self.current_proc.terminate()
+                        self.current_proc.wait(timeout=0.2)
+                    except subprocess.TimeoutExpired:
+                        self.current_proc.kill()
+                self.current_proc = None
+        except Exception as err:
+            print(f"TTS error (pyttsx3): {err}")
+            with self.runtime_lock:
+                self.current_proc = None
+        finally:
+            with self.runtime_lock:
+                self.current_proc = None
 
     def run(self):
         while True:
@@ -67,20 +124,10 @@ class TTSWorker(threading.Thread):
             if text is self.stop_token:
                 self.stop_speaking()
                 break
-            cmd = ["say"]
-            cmd.extend(["-r", str(self.get_rate_wpm())])
-            if self.voice:
-                cmd.extend(["-v", self.voice])
-            cmd.append(text)
-            try:
-                with self.proc_lock:
-                    self.current_proc = subprocess.Popen(cmd)
-                self.current_proc.wait()
-            except Exception as err:
-                print(f"TTS error: {err}")
-            finally:
-                with self.proc_lock:
-                    self.current_proc = None
+            if self.use_pyttsx3:
+                self._speak_with_pyttsx3(text)
+            else:
+                print("TTS skipped: pyttsx3 unavailable")
 
     def speak(self, text):
         # Keep current speech intact; only replace queued pending items.
@@ -119,17 +166,16 @@ class TTSWorker(threading.Thread):
             except queue.Empty:
                 break
 
-        with self.proc_lock:
+        with self.runtime_lock:
             proc = self.current_proc
-
-        if proc and proc.poll() is None:
-            try:
-                proc.terminate()
-                proc.wait(timeout=0.2)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-            except Exception as err:
-                print(f"TTS stop error: {err}")
+            if proc and proc.poll() is None:
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=0.2)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                except Exception as err:
+                    print(f"TTS stop error (pyttsx3 subprocess): {err}")
 
     def stop(self):
         self.text_queue.put(self.stop_token)
