@@ -2,11 +2,14 @@ import sys
 import queue
 import threading
 import subprocess
+import time
+import re
+from difflib import SequenceMatcher
 import mss
 import pytesseract
 from PIL import Image
 from PyQt5.QtWidgets import QApplication, QWidget, QMenuBar, QAction, QInputDialog, QMessageBox
-from PyQt5.QtCore import Qt, QTimer, QRect
+from PyQt5.QtCore import Qt, QTimer, QRect, QPointF
 from PyQt5.QtGui import QPainter, QPen, QColor, QCursor, QIcon, QPixmap, QFont
 
 
@@ -80,7 +83,19 @@ class TTSWorker(threading.Thread):
                     self.current_proc = None
 
     def speak(self, text):
+        # Keep current speech intact; only replace queued pending items.
+        self.clear_pending_texts()
         self.text_queue.put(text)
+
+    def clear_pending_texts(self):
+        while True:
+            try:
+                item = self.text_queue.get_nowait()
+                if item is self.stop_token:
+                    self.text_queue.put(self.stop_token)
+                    break
+            except queue.Empty:
+                break
 
     def set_rate_multiplier(self, multiplier):
         with self.config_lock:
@@ -97,7 +112,10 @@ class TTSWorker(threading.Thread):
     def stop_speaking(self):
         while True:
             try:
-                self.text_queue.get_nowait()
+                item = self.text_queue.get_nowait()
+                if item is self.stop_token:
+                    self.text_queue.put(self.stop_token)
+                    break
             except queue.Empty:
                 break
 
@@ -123,7 +141,6 @@ class Overlay(QWidget):
         self.setGeometry(300, 200, 600, 250)
 
         self.base_window_flags = Qt.FramelessWindowHint | Qt.Window
-        self.stay_on_top = True
         self.apply_window_flags()
 
         self.setAttribute(Qt.WA_TranslucentBackground)
@@ -131,9 +148,19 @@ class Overlay(QWidget):
 
         self.margin = 12
         self.resizing = None
+        self.min_width = 200
+        self.min_height = 100
+        self.resize_handle_size = 14
+        self.move_handle_size = 14
+        self.setMouseTracking(True)
 
         # TTS
         self.last_text = ""
+        self.last_text_cmp = ""
+        self.last_frame_signature = None
+        self.recent_spoken = {}
+        self.recent_spoken_ttl_sec = 18.0
+        self.similarity_skip_threshold = 0.92
         self.running = False
         self.ocr_in_progress = False
         self.state_lock = threading.Lock()
@@ -142,7 +169,9 @@ class Overlay(QWidget):
 
         # Timer OCR
         self.timer = QTimer()
+        self.timer.setTimerType(Qt.PreciseTimer)
         self.timer.timeout.connect(self.capture_area)
+        self.capture_interval_ms = 700
 
         self.start_action = None
         self.stop_action = None
@@ -150,41 +179,108 @@ class Overlay(QWidget):
     # ================= DRAW =================
     def paintEvent(self, event):
         painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
 
         # Border
         pen = QPen(QColor(255, 0, 0), 3)
         painter.setPen(pen)
         painter.drawRect(self.rect())
 
-        # Drag bar
-        painter.fillRect(0, 0, self.width(), 35, QColor(255, 0, 0, 40))
+        # Top-right resize handle
+        move_handle = self.move_handle_rect()
+        resize_handle = self.resize_handle_rect()
+
+        painter.fillRect(move_handle, QColor(255, 255, 255, 210))
+        painter.fillRect(resize_handle, QColor(255, 255, 255, 210))
+        painter.setPen(QPen(QColor(255, 0, 0), 2))
+        painter.drawRect(move_handle)
+        painter.drawRect(resize_handle)
+        self.draw_move_icon(painter, move_handle)
+        self.draw_resize_icon(painter, resize_handle)
+
+    def draw_move_icon(self, painter, rect):
+        cx = rect.x() + (rect.width() / 2.0)
+        cy = rect.y() + (rect.height() / 2.0)
+        icon_pen = QPen(QColor(200, 0, 0), 1.2)
+        icon_pen.setCapStyle(Qt.RoundCap)
+        icon_pen.setJoinStyle(Qt.RoundJoin)
+        icon_pen.setCosmetic(True)
+        painter.setPen(icon_pen)
+        arm = 3.4
+        head = 1.8
+
+        painter.drawLine(QPointF(cx - arm, cy), QPointF(cx + arm, cy))
+        painter.drawLine(QPointF(cx, cy - arm), QPointF(cx, cy + arm))
+
+        # Left arrow
+        painter.drawLine(QPointF(cx - arm, cy), QPointF(cx - arm + head, cy - head))
+        painter.drawLine(QPointF(cx - arm, cy), QPointF(cx - arm + head, cy + head))
+        # Right arrow
+        painter.drawLine(QPointF(cx + arm, cy), QPointF(cx + arm - head, cy - head))
+        painter.drawLine(QPointF(cx + arm, cy), QPointF(cx + arm - head, cy + head))
+        # Up arrow
+        painter.drawLine(QPointF(cx, cy - arm), QPointF(cx - head, cy - arm + head))
+        painter.drawLine(QPointF(cx, cy - arm), QPointF(cx + head, cy - arm + head))
+        # Down arrow
+        painter.drawLine(QPointF(cx, cy + arm), QPointF(cx - head, cy + arm - head))
+        painter.drawLine(QPointF(cx, cy + arm), QPointF(cx + head, cy + arm - head))
+
+        painter.setBrush(QColor(200, 0, 0))
+        painter.drawEllipse(QPointF(cx, cy), 0.9, 0.9)
+
+    def draw_resize_icon(self, painter, rect):
+        left = rect.left() + 3
+        top = rect.top() + 3
+        right = rect.right() - 3
+        bottom = rect.bottom() - 3
+        icon_pen = QPen(QColor(200, 0, 0), 2)
+        painter.setPen(icon_pen)
+
+        # Main diagonal
+        painter.drawLine(left, bottom, right, top)
+        # Arrow at top-right
+        painter.drawLine(right, top, right - 3, top)
+        painter.drawLine(right, top, right, top + 3)
+        # Arrow at bottom-left
+        painter.drawLine(left, bottom, left + 3, bottom)
+        painter.drawLine(left, bottom, left, bottom - 3)
+
+    def move_handle_rect(self):
+        padding = 6
+        return QRect(
+            padding,
+            padding,
+            self.move_handle_size,
+            self.move_handle_size,
+        )
+
+    def resize_handle_rect(self):
+        padding = 6
+        return QRect(
+            self.width() - self.resize_handle_size - padding,
+            padding,
+            self.resize_handle_size,
+            self.resize_handle_size,
+        )
 
     # ================= MOUSE EVENTS =================
     def mousePressEvent(self, event):
         self.start_pos = event.globalPos()
         self.start_geom = self.geometry()
 
-        rect = self.rect()
-
-        if event.pos().x() < self.margin:
-            self.resizing = "left"
-        elif event.pos().x() > rect.width() - self.margin:
-            self.resizing = "right"
-        elif event.pos().y() < self.margin:
-            self.resizing = "top"
-        elif event.pos().y() > rect.height() - self.margin:
-            self.resizing = "bottom"
+        if self.move_handle_rect().contains(event.pos()):
+            self.resizing = "move_handle"
+        elif self.resize_handle_rect().contains(event.pos()):
+            self.resizing = "top_right_handle"
         else:
-            self.resizing = "move"
+            self.resizing = None
 
     def mouseMoveEvent(self, event):
-        rect = self.rect()
-
         # Cursor change
-        if event.pos().x() < self.margin or event.pos().x() > rect.width() - self.margin:
-            self.setCursor(QCursor(Qt.SizeHorCursor))
-        elif event.pos().y() < self.margin or event.pos().y() > rect.height() - self.margin:
-            self.setCursor(QCursor(Qt.SizeVerCursor))
+        if self.move_handle_rect().contains(event.pos()):
+            self.setCursor(QCursor(Qt.SizeAllCursor))
+        elif self.resize_handle_rect().contains(event.pos()):
+            self.setCursor(QCursor(Qt.SizeBDiagCursor))
         else:
             self.setCursor(QCursor(Qt.ArrowCursor))
 
@@ -194,23 +290,16 @@ class Overlay(QWidget):
         delta = event.globalPos() - self.start_pos
         geom = QRect(self.start_geom)
 
-        if self.resizing == "move":
+        if self.resizing == "move_handle":
             self.move(self.start_geom.topLeft() + delta)
 
-        elif self.resizing == "right":
-            geom.setWidth(max(200, self.start_geom.width() + delta.x()))
-            self.setGeometry(geom)
+        elif self.resizing == "top_right_handle":
+            new_width = max(self.min_width, self.start_geom.width() + delta.x())
+            new_height = max(self.min_height, self.start_geom.height() - delta.y())
 
-        elif self.resizing == "left":
-            geom.setLeft(self.start_geom.left() + delta.x())
-            self.setGeometry(geom)
-
-        elif self.resizing == "bottom":
-            geom.setHeight(max(100, self.start_geom.height() + delta.y()))
-            self.setGeometry(geom)
-
-        elif self.resizing == "top":
-            geom.setTop(self.start_geom.top() + delta.y())
+            geom.setWidth(new_width)
+            bottom = self.start_geom.bottom()
+            geom.setTop(bottom - new_height + 1)
             self.setGeometry(geom)
 
     def mouseReleaseEvent(self, event):
@@ -223,19 +312,12 @@ class Overlay(QWidget):
         super().closeEvent(event)
 
     def apply_window_flags(self):
-        flags = self.base_window_flags
-        if self.stay_on_top:
-            flags |= Qt.WindowStaysOnTopHint
+        flags = self.base_window_flags | Qt.WindowStaysOnTopHint
         was_visible = self.isVisible()
         self.setWindowFlags(flags)
         if was_visible:
             self.show()
-            if self.stay_on_top:
-                self.raise_()
-
-    def set_stay_on_top(self, enabled):
-        self.stay_on_top = enabled
-        self.apply_window_flags()
+            self.raise_()
 
     def bind_menu_actions(self, start_action, stop_action):
         self.start_action = start_action
@@ -281,7 +363,11 @@ class Overlay(QWidget):
         if self.running:
             return
         self.running = True
-        self.timer.start(2000)
+        self.last_text = ""
+        self.last_text_cmp = ""
+        self.last_frame_signature = None
+        self.recent_spoken.clear()
+        self.timer.start(self.capture_interval_ms)
         self.update_capture_actions()
 
     def stop_capture(self):
@@ -289,6 +375,8 @@ class Overlay(QWidget):
             return
         self.running = False
         self.timer.stop()
+        self.last_text_cmp = ""
+        self.recent_spoken.clear()
         self.tts_worker.stop_speaking()
         self.update_capture_actions()
 
@@ -323,6 +411,12 @@ class Overlay(QWidget):
                 img = Image.frombytes("RGB", screenshot.size, screenshot.rgb)
 
             self.setWindowOpacity(1)
+            signature = img.convert("L").resize((64, 36)).tobytes()
+            if signature == self.last_frame_signature:
+                with self.state_lock:
+                    self.ocr_in_progress = False
+                return
+            self.last_frame_signature = signature
             threading.Thread(
                 target=self.process_image,
                 args=(img,),
@@ -339,24 +433,81 @@ class Overlay(QWidget):
 
     def process_image(self, img):
         try:
-            text = pytesseract.image_to_string(img, lang="vie").strip()
+            gray = img.convert("L")
+            text = pytesseract.image_to_string(
+                gray,
+                lang="vie",
+                config="--oem 1 --psm 6",
+            ).strip()
             if not text:
                 return
 
-            should_speak = False
-            with self.state_lock:
-                if self.running and (text != self.last_text):
-                    self.last_text = text
-                    should_speak = True
+            normalized_text = " ".join(text.split())
+            if not normalized_text:
+                return
 
-            if should_speak:
-                print("Detected:", text)
-                self.tts_worker.speak(text)
+            text_to_speak = None
+            next_last_text = None
+            next_last_cmp = None
+            with self.state_lock:
+                if not self.running:
+                    return
+
+                cmp_text = self.make_compare_key(normalized_text)
+                if not cmp_text:
+                    return
+
+                self.prune_recent_spoken_locked()
+
+                if cmp_text in self.recent_spoken:
+                    return
+
+                if self.last_text_cmp:
+                    if normalized_text.startswith(self.last_text):
+                        suffix = normalized_text[len(self.last_text):].strip()
+                        if len(suffix) < 6:
+                            return
+                        text_to_speak = suffix
+                    elif cmp_text.startswith(self.last_text_cmp):
+                        return
+                    else:
+                        similarity = SequenceMatcher(None, cmp_text, self.last_text_cmp).ratio()
+                        if similarity >= self.similarity_skip_threshold:
+                            return
+                        text_to_speak = normalized_text
+                else:
+                    text_to_speak = normalized_text
+
+                next_last_text = normalized_text
+                next_last_cmp = cmp_text
+                self.recent_spoken[cmp_text] = time.monotonic()
+
+            if text_to_speak:
+                print("Detected:", text_to_speak)
+                self.tts_worker.speak(text_to_speak)
+                with self.state_lock:
+                    self.last_text = next_last_text
+                    self.last_text_cmp = next_last_cmp
         except Exception as err:
             print(f"OCR error: {err}")
         finally:
             with self.state_lock:
                 self.ocr_in_progress = False
+
+    def make_compare_key(self, value):
+        normalized = value.lower().strip()
+        normalized = re.sub(r"[^\w\s]", " ", normalized, flags=re.UNICODE)
+        normalized = re.sub(r"\s+", " ", normalized).strip()
+        return normalized
+
+    def prune_recent_spoken_locked(self):
+        now = time.monotonic()
+        expired = [
+            key for key, seen_at in self.recent_spoken.items()
+            if now - seen_at > self.recent_spoken_ttl_sec
+        ]
+        for key in expired:
+            del self.recent_spoken[key]
 
 
 if __name__ == "__main__":
@@ -372,19 +523,14 @@ if __name__ == "__main__":
     start_action = QAction("Start", menu_bar)
     stop_action = QAction("Stop", menu_bar)
     speed_action = QAction("Set Speed...", menu_bar)
-    stay_on_top_action = QAction("Stay On Top", menu_bar)
-    stay_on_top_action.setCheckable(True)
-    stay_on_top_action.setChecked(True)
     close_action = QAction("Close App", menu_bar)
     start_action.triggered.connect(overlay.start_capture)
     stop_action.triggered.connect(overlay.stop_capture)
     speed_action.triggered.connect(overlay.prompt_speed_multiplier)
-    stay_on_top_action.toggled.connect(overlay.set_stay_on_top)
     close_action.triggered.connect(app.quit)
     options_menu.addAction(start_action)
     options_menu.addAction(stop_action)
     options_menu.addAction(speed_action)
-    options_menu.addAction(stay_on_top_action)
     options_menu.addAction(close_action)
     overlay.bind_menu_actions(start_action, stop_action)
 
