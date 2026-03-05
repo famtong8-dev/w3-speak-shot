@@ -1,9 +1,11 @@
 import sys
+import queue
+import threading
+import subprocess
 import mss
 import pytesseract
-import pyttsx3
 from PIL import Image
-from PyQt5.QtWidgets import QApplication, QWidget, QMenuBar, QAction
+from PyQt5.QtWidgets import QApplication, QWidget, QMenuBar, QAction, QInputDialog, QMessageBox
 from PyQt5.QtCore import Qt, QTimer, QRect
 from PyQt5.QtGui import QPainter, QPen, QColor, QCursor, QIcon, QPixmap, QFont
 
@@ -28,16 +30,91 @@ def create_app_icon():
     return QIcon(pixmap)
 
 
-def speak(text):
-    engine = pyttsx3.init(driverName='nsss')
-    voices = engine.getProperty('voices')
-    for v in voices:
-        if "vi" in v.id.lower():
-            engine.setProperty('voice', v.id)
-            break
-    engine.say(text)
-    engine.runAndWait()
-    engine.stop()
+class TTSWorker(threading.Thread):
+    def __init__(self, base_rate_wpm=260, rate_multiplier=1.0):
+        super().__init__(daemon=True)
+        self.text_queue = queue.Queue()
+        self.stop_token = object()
+        self.voice = self._detect_vietnamese_voice()
+        self.base_rate_wpm = max(120, int(base_rate_wpm))
+        self.rate_multiplier = max(0.1, float(rate_multiplier))
+        self.config_lock = threading.Lock()
+        self.proc_lock = threading.Lock()
+        self.current_proc = None
+
+    def _detect_vietnamese_voice(self):
+        try:
+            result = subprocess.run(
+                ["say", "-v", "?"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            for line in result.stdout.splitlines():
+                lower = line.lower()
+                if "vi_vn" in lower or "vietnam" in lower:
+                    return line.split()[0]
+        except Exception:
+            return None
+        return None
+
+    def run(self):
+        while True:
+            text = self.text_queue.get()
+            if text is self.stop_token:
+                self.stop_speaking()
+                break
+            cmd = ["say"]
+            cmd.extend(["-r", str(self.get_rate_wpm())])
+            if self.voice:
+                cmd.extend(["-v", self.voice])
+            cmd.append(text)
+            try:
+                with self.proc_lock:
+                    self.current_proc = subprocess.Popen(cmd)
+                self.current_proc.wait()
+            except Exception as err:
+                print(f"TTS error: {err}")
+            finally:
+                with self.proc_lock:
+                    self.current_proc = None
+
+    def speak(self, text):
+        self.text_queue.put(text)
+
+    def set_rate_multiplier(self, multiplier):
+        with self.config_lock:
+            self.rate_multiplier = max(0.1, float(multiplier))
+
+    def get_rate_multiplier(self):
+        with self.config_lock:
+            return self.rate_multiplier
+
+    def get_rate_wpm(self):
+        with self.config_lock:
+            return max(120, int(self.base_rate_wpm * self.rate_multiplier))
+
+    def stop_speaking(self):
+        while True:
+            try:
+                self.text_queue.get_nowait()
+            except queue.Empty:
+                break
+
+        with self.proc_lock:
+            proc = self.current_proc
+
+        if proc and proc.poll() is None:
+            try:
+                proc.terminate()
+                proc.wait(timeout=0.2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            except Exception as err:
+                print(f"TTS stop error: {err}")
+
+    def stop(self):
+        self.text_queue.put(self.stop_token)
 
 class Overlay(QWidget):
     def __init__(self):
@@ -58,6 +135,10 @@ class Overlay(QWidget):
         # TTS
         self.last_text = ""
         self.running = False
+        self.ocr_in_progress = False
+        self.state_lock = threading.Lock()
+        self.tts_worker = TTSWorker(base_rate_wpm=260, rate_multiplier=1.0)
+        self.tts_worker.start()
 
         # Timer OCR
         self.timer = QTimer()
@@ -135,6 +216,12 @@ class Overlay(QWidget):
     def mouseReleaseEvent(self, event):
         self.resizing = None
 
+    def closeEvent(self, event):
+        self.stop_capture()
+        self.tts_worker.stop()
+        self.tts_worker.join(timeout=1.0)
+        super().closeEvent(event)
+
     def apply_window_flags(self):
         flags = self.base_window_flags
         if self.stay_on_top:
@@ -155,6 +242,40 @@ class Overlay(QWidget):
         self.stop_action = stop_action
         self.update_capture_actions()
 
+    def prompt_speed_multiplier(self):
+        current = self.tts_worker.get_rate_multiplier()
+        text, ok = QInputDialog.getText(
+            self,
+            "Speed Multiplier",
+            "Enter speed (for example: 1, 2, 2.5):",
+            text=f"{current:g}",
+        )
+        if not ok:
+            return
+
+        multiplier = self.parse_speed_multiplier(text)
+        if multiplier is None:
+            QMessageBox.warning(
+                self,
+                "Invalid Speed",
+                "Invalid value. Use 1, 2, or 2.5 (must be greater than 0).",
+            )
+            return
+
+        self.tts_worker.set_rate_multiplier(multiplier)
+        print(f"TTS speed set to {multiplier:g}x ({self.tts_worker.get_rate_wpm()} wpm)")
+
+    def parse_speed_multiplier(self, value):
+        raw = value.strip().lower()
+        raw = raw.replace(",", ".")
+        try:
+            multiplier = float(raw)
+        except ValueError:
+            return None
+        if multiplier <= 0:
+            return None
+        return multiplier
+
     # ================= START / STOP =================
     def start_capture(self):
         if self.running:
@@ -168,6 +289,7 @@ class Overlay(QWidget):
             return
         self.running = False
         self.timer.stop()
+        self.tts_worker.stop_speaking()
         self.update_capture_actions()
 
     def update_capture_actions(self):
@@ -178,29 +300,63 @@ class Overlay(QWidget):
 
     # ================= OCR CAPTURE =================
     def capture_area(self):
-        self.setWindowOpacity(0)
-        QApplication.processEvents()
+        with self.state_lock:
+            if self.ocr_in_progress:
+                return
+            self.ocr_in_progress = True
 
-        geo = self.geometry()
+        worker_started = False
+        try:
+            self.setWindowOpacity(0)
+            QApplication.processEvents()
 
-        with mss.mss() as sct:
-            monitor = {
-                "top": geo.y(),
-                "left": geo.x(),
-                "width": geo.width(),
-                "height": geo.height()
-            }
-            screenshot = sct.grab(monitor)
-            img = Image.frombytes("RGB", screenshot.size, screenshot.rgb)
+            geo = self.geometry()
 
-        self.setWindowOpacity(1)
+            with mss.mss() as sct:
+                monitor = {
+                    "top": geo.y(),
+                    "left": geo.x(),
+                    "width": geo.width(),
+                    "height": geo.height()
+                }
+                screenshot = sct.grab(monitor)
+                img = Image.frombytes("RGB", screenshot.size, screenshot.rgb)
 
-        text = pytesseract.image_to_string(img, lang="vie").strip()
+            self.setWindowOpacity(1)
+            threading.Thread(
+                target=self.process_image,
+                args=(img,),
+                daemon=True,
+            ).start()
+            worker_started = True
+        except Exception as err:
+            print(f"Capture error: {err}")
+            self.setWindowOpacity(1)
+        finally:
+            if not worker_started:
+                with self.state_lock:
+                    self.ocr_in_progress = False
 
-        if text and (text != self.last_text):
-            print("Detected:", text)
-            speak(text)
-            self.last_text = text
+    def process_image(self, img):
+        try:
+            text = pytesseract.image_to_string(img, lang="vie").strip()
+            if not text:
+                return
+
+            should_speak = False
+            with self.state_lock:
+                if self.running and (text != self.last_text):
+                    self.last_text = text
+                    should_speak = True
+
+            if should_speak:
+                print("Detected:", text)
+                self.tts_worker.speak(text)
+        except Exception as err:
+            print(f"OCR error: {err}")
+        finally:
+            with self.state_lock:
+                self.ocr_in_progress = False
 
 
 if __name__ == "__main__":
@@ -215,16 +371,19 @@ if __name__ == "__main__":
     options_menu = menu_bar.addMenu("Options")
     start_action = QAction("Start", menu_bar)
     stop_action = QAction("Stop", menu_bar)
+    speed_action = QAction("Set Speed...", menu_bar)
     stay_on_top_action = QAction("Stay On Top", menu_bar)
     stay_on_top_action.setCheckable(True)
     stay_on_top_action.setChecked(True)
     close_action = QAction("Close App", menu_bar)
     start_action.triggered.connect(overlay.start_capture)
     stop_action.triggered.connect(overlay.stop_capture)
+    speed_action.triggered.connect(overlay.prompt_speed_multiplier)
     stay_on_top_action.toggled.connect(overlay.set_stay_on_top)
     close_action.triggered.connect(app.quit)
     options_menu.addAction(start_action)
     options_menu.addAction(stop_action)
+    options_menu.addAction(speed_action)
     options_menu.addAction(stay_on_top_action)
     options_menu.addAction(close_action)
     overlay.bind_menu_actions(start_action, stop_action)
