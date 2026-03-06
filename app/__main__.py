@@ -7,6 +7,8 @@ import re
 import asyncio
 import tempfile
 import os
+import json
+import unicodedata
 from difflib import SequenceMatcher
 import mss
 import pytesseract
@@ -45,21 +47,19 @@ class TTSWorker(threading.Thread):
     def __init__(self, base_rate_wpm=260, rate_multiplier=1.0):
         super().__init__(daemon=True)
         self.text_queue = queue.Queue()
+        self.audio_queue = queue.Queue()
         self.stop_token = object()
         self.base_rate_wpm = max(120, int(base_rate_wpm))
         self.rate_multiplier = max(0.1, float(rate_multiplier))
         self.config_lock = threading.Lock()
         self.runtime_lock = threading.Lock()
-        self.merge_lock = threading.Lock()
         self.current_proc = None
-        self.merge_buffer = ""
-        self.merge_last_update = 0.0
-        self.merge_idle_flush_sec = 0.16
-        self.min_emit_chars = 14
-        self.soft_flush_chars = 48
-        self.drop_backlog_for_realtime = True
         self.edge_voice = "en-US-AndrewMultilingualNeural"
         self.use_edge_tts = edge_tts is not None
+        self.max_pending_texts = 1
+        self.max_pending_audio = 1
+        self.synth_thread = threading.Thread(target=self._synth_loop, daemon=True)
+        self.synth_thread.start()
 
         if self.use_edge_tts:
             print(f"TTS backend: edge-tts ({self.edge_voice})")
@@ -79,10 +79,9 @@ class TTSWorker(threading.Thread):
         )
         await communicator.save(output_path)
 
-    def _speak_with_edge_tts(self, text):
+    def _synthesize_edge_tts(self, text):
         if not self.use_edge_tts:
-            print("TTS skipped: edge-tts unavailable")
-            return
+            return None
 
         media_path = None
         try:
@@ -90,7 +89,18 @@ class TTSWorker(threading.Thread):
                 media_path = tmp.name
 
             asyncio.run(self._edge_save(text, media_path))
+            return media_path
+        except Exception as err:
+            print(f"TTS error (edge-tts synth): {err}")
+            if media_path and os.path.exists(media_path):
+                try:
+                    os.remove(media_path)
+                except OSError:
+                    pass
+            return None
 
+    def _play_media_file(self, media_path):
+        try:
             with self.runtime_lock:
                 self.current_proc = subprocess.Popen(["afplay", media_path])
             self.current_proc.wait(timeout=30)
@@ -101,7 +111,7 @@ class TTSWorker(threading.Thread):
                     self.current_proc.kill()
                 self.current_proc = None
         except Exception as err:
-            print(f"TTS error (edge-tts): {err}")
+            print(f"TTS error (edge-tts playback): {err}")
             with self.runtime_lock:
                 self.current_proc = None
         finally:
@@ -113,101 +123,61 @@ class TTSWorker(threading.Thread):
                 except OSError:
                     pass
 
-    def run(self):
+    def _synth_loop(self):
         while True:
             try:
                 text = self.text_queue.get(timeout=0.1)
             except queue.Empty:
-                idle_chunk = self._flush_buffer_if_idle()
-                if idle_chunk:
-                    if self.use_edge_tts:
-                        self._speak_with_edge_tts(idle_chunk)
-                    else:
-                        print("TTS skipped: edge-tts unavailable")
                 continue
 
             if text is self.stop_token:
-                self.stop_speaking()
+                self.audio_queue.put(self.stop_token)
                 break
-            if self.use_edge_tts:
-                self._speak_with_edge_tts(text)
-            else:
-                print("TTS skipped: edge-tts unavailable")
 
-    def speak(self, text):
-        if self.drop_backlog_for_realtime:
-            # Realtime mode: trim stale backlog but keep the nearest pending chunk.
-            self.trim_pending_texts(keep_latest=1)
-        for chunk in self._merge_text_by_punctuation(text):
-            self.text_queue.put(chunk)
+            media_path = self._synthesize_edge_tts(text)
+            if media_path:
+                if self.max_pending_audio > 0:
+                    self._trim_queue_for_realtime(
+                        self.audio_queue,
+                        keep_latest=max(0, self.max_pending_audio - 1),
+                        cleanup_media=True,
+                    )
+                self.audio_queue.put(media_path)
 
-    def _merge_text_by_punctuation(self, text):
-        normalized = " ".join(text.split()).strip()
-        if not normalized:
-            return []
-
-        with self.merge_lock:
-            self.merge_last_update = time.monotonic()
-            if self.merge_buffer:
-                self.merge_buffer = f"{self.merge_buffer} {normalized}".strip()
-            else:
-                self.merge_buffer = normalized
-
-            chunks = []
-            start = 0
-            for idx, ch in enumerate(self.merge_buffer):
-                if ch in ".!?":
-                    chunk = self.merge_buffer[start:idx + 1].strip()
-                    if chunk:
-                        chunks.append(chunk)
-                    start = idx + 1
-                elif ch in ",:;":
-                    # Avoid overly short chunks that sound choppy.
-                    chunk = self.merge_buffer[start:idx + 1].strip()
-                    if len(chunk) >= self.min_emit_chars:
-                        chunks.append(chunk)
-                        start = idx + 1
-
-            self.merge_buffer = self.merge_buffer[start:].strip()
-
-            # Soft flush: keep speech flowing even without sentence-ending punctuation.
-            if len(self.merge_buffer) >= self.soft_flush_chars:
-                cut = self.merge_buffer.rfind(" ", 0, self.soft_flush_chars - 8)
-                if cut <= 0:
-                    cut = self.soft_flush_chars - 8
-                chunk = self.merge_buffer[:cut].strip()
-                if chunk:
-                    chunks.append(chunk + ".")
-                self.merge_buffer = self.merge_buffer[cut:].strip()
-
-            return chunks
-
-    def _flush_buffer_if_idle(self):
-        with self.merge_lock:
-            if not self.merge_buffer:
-                return None
-            if (time.monotonic() - self.merge_last_update) < self.merge_idle_flush_sec:
-                return None
-            chunk = self.merge_buffer.strip()
-            self.merge_buffer = ""
-            return chunk
-
-    def clear_pending_texts(self):
+    def run(self):
         while True:
             try:
-                item = self.text_queue.get_nowait()
-                if item is self.stop_token:
-                    self.text_queue.put(self.stop_token)
-                    break
+                item = self.audio_queue.get(timeout=0.1)
             except queue.Empty:
-                break
+                continue
 
-    def trim_pending_texts(self, keep_latest=1):
+            if item is self.stop_token:
+                self.stop_speaking()
+                break
+            self._play_media_file(item)
+
+    def speak(self, text):
+        normalized = " ".join(text.split()).strip()
+        if not normalized:
+            return
+        # Reduce natural pause added by TTS at trailing punctuation boundaries.
+        normalized = re.sub(r"\s*[,:;.!?]+\s*$", "", normalized).strip()
+        if not normalized:
+            return
+        if self.max_pending_texts > 0:
+            self._trim_queue_for_realtime(
+                self.text_queue,
+                keep_latest=max(0, self.max_pending_texts - 1),
+            )
+        self.text_queue.put(normalized)
+
+    def _trim_queue_for_realtime(self, target_queue, keep_latest, cleanup_media=False):
         kept = []
+        dropped = []
         saw_stop = False
         while True:
             try:
-                item = self.text_queue.get_nowait()
+                item = target_queue.get_nowait()
                 if item is self.stop_token:
                     saw_stop = True
                     continue
@@ -215,15 +185,22 @@ class TTSWorker(threading.Thread):
             except queue.Empty:
                 break
 
-        if keep_latest > 0 and kept:
-            kept = kept[-keep_latest:]
-        else:
-            kept = []
+        if keep_latest < len(kept):
+            dropped = kept[:-keep_latest] if keep_latest > 0 else kept
+            kept = kept[-keep_latest:] if keep_latest > 0 else []
 
         for item in kept:
-            self.text_queue.put(item)
+            target_queue.put(item)
         if saw_stop:
-            self.text_queue.put(self.stop_token)
+            target_queue.put(self.stop_token)
+
+        if cleanup_media:
+            for item in dropped:
+                if isinstance(item, str) and os.path.exists(item):
+                    try:
+                        os.remove(item)
+                    except OSError:
+                        pass
 
     def set_rate_multiplier(self, multiplier):
         with self.config_lock:
@@ -238,14 +215,8 @@ class TTSWorker(threading.Thread):
             return max(120, int(self.base_rate_wpm * self.rate_multiplier))
 
     def stop_speaking(self):
-        while True:
-            try:
-                item = self.text_queue.get_nowait()
-                if item is self.stop_token:
-                    self.text_queue.put(self.stop_token)
-                    break
-            except queue.Empty:
-                break
+        self._trim_queue_for_realtime(self.text_queue, keep_latest=0)
+        self._trim_queue_for_realtime(self.audio_queue, keep_latest=0, cleanup_media=True)
 
         with self.runtime_lock:
             if self.current_proc and self.current_proc.poll() is None:
@@ -258,9 +229,6 @@ class TTSWorker(threading.Thread):
                     print(f"TTS stop error (edge-tts playback): {err}")
             self.current_proc = None
 
-        with self.merge_lock:
-            self.merge_buffer = ""
-
     def stop(self):
         self.text_queue.put(self.stop_token)
 
@@ -269,6 +237,7 @@ class Overlay(QWidget):
         super().__init__()
 
         self.setGeometry(300, 200, 600, 250)
+        self.window_state_path = os.path.join(os.path.dirname(__file__), ".overlay_state.json")
 
         self.base_window_flags = Qt.FramelessWindowHint | Qt.Window
         self.apply_window_flags()
@@ -283,6 +252,7 @@ class Overlay(QWidget):
         self.resize_handle_size = 14
         self.move_handle_size = 14
         self.setMouseTracking(True)
+        self.restore_last_geometry()
 
         # TTS
         self.last_text = ""
@@ -301,7 +271,7 @@ class Overlay(QWidget):
         self.timer = QTimer()
         self.timer.setTimerType(Qt.PreciseTimer)
         self.timer.timeout.connect(self.capture_area)
-        self.capture_interval_ms = 700
+        self.capture_interval_ms = 350
 
         self.start_action = None
         self.stop_action = None
@@ -435,12 +405,43 @@ class Overlay(QWidget):
 
     def mouseReleaseEvent(self, event):
         self.resizing = None
+        self.save_current_geometry()
 
     def closeEvent(self, event):
+        self.save_current_geometry()
         self.stop_capture()
         self.tts_worker.stop()
         self.tts_worker.join(timeout=1.0)
         super().closeEvent(event)
+
+    def restore_last_geometry(self):
+        try:
+            if not os.path.exists(self.window_state_path):
+                return
+            with open(self.window_state_path, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+
+            x = int(data.get("x"))
+            y = int(data.get("y"))
+            width = max(self.min_width, int(data.get("width")))
+            height = max(self.min_height, int(data.get("height")))
+            self.setGeometry(x, y, width, height)
+        except Exception as err:
+            print(f"Window state restore error: {err}")
+
+    def save_current_geometry(self):
+        try:
+            geom = self.geometry()
+            payload = {
+                "x": int(geom.x()),
+                "y": int(geom.y()),
+                "width": int(geom.width()),
+                "height": int(geom.height()),
+            }
+            with open(self.window_state_path, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle)
+        except Exception as err:
+            print(f"Window state save error: {err}")
 
     def apply_window_flags(self):
         flags = self.base_window_flags | Qt.WindowStaysOnTopHint
@@ -582,7 +583,7 @@ class Overlay(QWidget):
             if not text:
                 return
 
-            normalized_text = " ".join(text.split())
+            normalized_text = self.sanitize_ocr_text(text)
             if not normalized_text:
                 return
 
@@ -599,13 +600,10 @@ class Overlay(QWidget):
 
                 self.prune_recent_spoken_locked()
 
-                if cmp_text in self.recent_spoken:
-                    return
-
                 if self.last_text_cmp:
                     if normalized_text.startswith(self.last_text):
                         suffix = normalized_text[len(self.last_text):].strip()
-                        if len(suffix) < 6:
+                        if len(suffix) < 2:
                             return
                         text_to_speak = suffix
                     elif cmp_text.startswith(self.last_text_cmp):
@@ -620,7 +618,15 @@ class Overlay(QWidget):
 
                 next_last_text = normalized_text
                 next_last_cmp = cmp_text
-                self.recent_spoken[cmp_text] = time.monotonic()
+                text_to_speak = self.sanitize_ocr_text(text_to_speak)
+                if self.is_noise_text(text_to_speak):
+                    return
+                speak_cmp = self.make_compare_key(text_to_speak)
+                if not speak_cmp:
+                    return
+                if speak_cmp in self.recent_spoken:
+                    return
+                self.recent_spoken[speak_cmp] = time.monotonic()
 
             if text_to_speak:
                 print("Detected:", text_to_speak)
@@ -639,6 +645,46 @@ class Overlay(QWidget):
         normalized = re.sub(r"[^\w\s]", " ", normalized, flags=re.UNICODE)
         normalized = re.sub(r"\s+", " ", normalized).strip()
         return normalized
+
+    def sanitize_ocr_text(self, value):
+        allowed_punct = set(" .,;:!?-()/+&%$@#'\"")
+        filtered = []
+        for ch in value:
+            if ch.isspace():
+                filtered.append(" ")
+                continue
+            if ch in allowed_punct:
+                filtered.append(ch)
+                continue
+            if "0" <= ch <= "9":
+                filtered.append(ch)
+                continue
+            if unicodedata.category(ch).startswith("L"):
+                filtered.append(ch)
+                continue
+
+        normalized = " ".join("".join(filtered).split()).strip()
+        if not normalized:
+            return ""
+
+        # OCR often appends a dangling 1-char token (for example: "... , h").
+        parts = normalized.split()
+        if len(parts) >= 4 and len(parts[-1]) == 1 and parts[-1].lower() not in {"a", "i"}:
+            normalized = " ".join(parts[:-1]).strip()
+        return normalized
+
+    def is_noise_text(self, value):
+        if not value:
+            return True
+        letters = sum(1 for ch in value if ch.isalpha())
+        digits = sum(1 for ch in value if ch.isdigit())
+        if letters < 3:
+            return True
+        if digits > max(letters, 1):
+            return True
+        if re.search(r"(.)\1{6,}", value):
+            return True
+        return False
 
     def prune_recent_spoken_locked(self):
         now = time.monotonic()
