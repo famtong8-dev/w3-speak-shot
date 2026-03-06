@@ -4,6 +4,9 @@ import threading
 import subprocess
 import time
 import re
+import asyncio
+import tempfile
+import os
 from difflib import SequenceMatcher
 import mss
 import pytesseract
@@ -13,9 +16,9 @@ from PyQt5.QtCore import Qt, QTimer, QRect, QPointF
 from PyQt5.QtGui import QPainter, QPen, QColor, QCursor, QIcon, QPixmap, QFont
 
 try:
-    import pyttsx3
+    import edge_tts
 except Exception:
-    pyttsx3 = None
+    edge_tts = None
 
 
 def create_app_icon():
@@ -47,92 +50,147 @@ class TTSWorker(threading.Thread):
         self.rate_multiplier = max(0.1, float(rate_multiplier))
         self.config_lock = threading.Lock()
         self.runtime_lock = threading.Lock()
+        self.merge_lock = threading.Lock()
         self.current_proc = None
-        self.voice_id = None
-        self.use_pyttsx3 = False
+        self.merge_buffer = ""
+        self.merge_last_update = 0.0
+        self.merge_idle_flush_sec = 0.16
+        self.min_emit_chars = 14
+        self.soft_flush_chars = 48
+        self.drop_backlog_for_realtime = True
+        self.edge_voice = "en-US-AndrewMultilingualNeural"
+        self.use_edge_tts = edge_tts is not None
 
-        if pyttsx3 is not None:
-            try:
-                probe_engine = pyttsx3.init(driverName="nsss")
-                self.voice_id = self._detect_pyttsx3_voice(probe_engine)
-                probe_engine.stop()
-                self.use_pyttsx3 = True
-                print("TTS backend: pyttsx3")
-            except Exception as err:
-                print(f"TTS disabled: pyttsx3 init failed: {err}")
-                self.use_pyttsx3 = False
+        if self.use_edge_tts:
+            print(f"TTS backend: edge-tts ({self.edge_voice})")
+        else:
+            print("TTS disabled: edge-tts is not installed")
 
-    def _detect_pyttsx3_voice(self, engine):
-        voice_id = None
-        for voice in engine.getProperty("voices"):
-            fields = [str(getattr(voice, "id", "")), str(getattr(voice, "name", ""))]
-            langs = getattr(voice, "languages", [])
-            fields.extend(str(lang) for lang in langs)
-            data = " ".join(fields).lower()
+    def _edge_rate(self):
+        multiplier = self.get_rate_multiplier()
+        percent = int(round((multiplier - 1.0) * 100))
+        return f"{percent:+d}%"
 
-            if voice_id is None and any(token in data for token in ["vi_vn", "vietnam", "vietnamese"]):
-                voice_id = voice.id
-        return voice_id
-
-    def _speak_with_pyttsx3(self, text):
-        script = (
-            "import sys,pyttsx3\n"
-            "text=sys.argv[1]\n"
-            "voice=sys.argv[2]\n"
-            "rate=int(sys.argv[3])\n"
-            "engine=pyttsx3.init(driverName='nsss')\n"
-            "if voice!='__NONE__':\n"
-            "    engine.setProperty('voice',voice)\n"
-            "engine.setProperty('rate',rate)\n"
-            "engine.say(text)\n"
-            "engine.runAndWait()\n"
-            "engine.stop()\n"
+    async def _edge_save(self, text, output_path):
+        communicator = edge_tts.Communicate(
+            text=text,
+            voice=self.edge_voice,
+            rate=self._edge_rate(),
         )
-        cmd = [
-            sys.executable,
-            "-c",
-            script,
-            text,
-            self.voice_id or "__NONE__",
-            str(self.get_rate_wpm()),
-        ]
+        await communicator.save(output_path)
+
+    def _speak_with_edge_tts(self, text):
+        if not self.use_edge_tts:
+            print("TTS skipped: edge-tts unavailable")
+            return
+
+        media_path = None
         try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp:
+                media_path = tmp.name
+
+            asyncio.run(self._edge_save(text, media_path))
+
             with self.runtime_lock:
-                self.current_proc = subprocess.Popen(cmd)
-            self.current_proc.wait(timeout=15)
+                self.current_proc = subprocess.Popen(["afplay", media_path])
+            self.current_proc.wait(timeout=30)
         except subprocess.TimeoutExpired:
-            print("TTS error (pyttsx3): timeout")
+            print("TTS error (edge-tts playback): timeout")
             with self.runtime_lock:
                 if self.current_proc and self.current_proc.poll() is None:
-                    try:
-                        self.current_proc.terminate()
-                        self.current_proc.wait(timeout=0.2)
-                    except subprocess.TimeoutExpired:
-                        self.current_proc.kill()
+                    self.current_proc.kill()
                 self.current_proc = None
         except Exception as err:
-            print(f"TTS error (pyttsx3): {err}")
+            print(f"TTS error (edge-tts): {err}")
             with self.runtime_lock:
                 self.current_proc = None
         finally:
             with self.runtime_lock:
                 self.current_proc = None
+            if media_path and os.path.exists(media_path):
+                try:
+                    os.remove(media_path)
+                except OSError:
+                    pass
 
     def run(self):
         while True:
-            text = self.text_queue.get()
+            try:
+                text = self.text_queue.get(timeout=0.1)
+            except queue.Empty:
+                idle_chunk = self._flush_buffer_if_idle()
+                if idle_chunk:
+                    if self.use_edge_tts:
+                        self._speak_with_edge_tts(idle_chunk)
+                    else:
+                        print("TTS skipped: edge-tts unavailable")
+                continue
+
             if text is self.stop_token:
                 self.stop_speaking()
                 break
-            if self.use_pyttsx3:
-                self._speak_with_pyttsx3(text)
+            if self.use_edge_tts:
+                self._speak_with_edge_tts(text)
             else:
-                print("TTS skipped: pyttsx3 unavailable")
+                print("TTS skipped: edge-tts unavailable")
 
     def speak(self, text):
-        # Keep current speech intact; only replace queued pending items.
-        self.clear_pending_texts()
-        self.text_queue.put(text)
+        if self.drop_backlog_for_realtime:
+            # Realtime mode: trim stale backlog but keep the nearest pending chunk.
+            self.trim_pending_texts(keep_latest=1)
+        for chunk in self._merge_text_by_punctuation(text):
+            self.text_queue.put(chunk)
+
+    def _merge_text_by_punctuation(self, text):
+        normalized = " ".join(text.split()).strip()
+        if not normalized:
+            return []
+
+        with self.merge_lock:
+            self.merge_last_update = time.monotonic()
+            if self.merge_buffer:
+                self.merge_buffer = f"{self.merge_buffer} {normalized}".strip()
+            else:
+                self.merge_buffer = normalized
+
+            chunks = []
+            start = 0
+            for idx, ch in enumerate(self.merge_buffer):
+                if ch in ".!?":
+                    chunk = self.merge_buffer[start:idx + 1].strip()
+                    if chunk:
+                        chunks.append(chunk)
+                    start = idx + 1
+                elif ch in ",:;":
+                    # Avoid overly short chunks that sound choppy.
+                    chunk = self.merge_buffer[start:idx + 1].strip()
+                    if len(chunk) >= self.min_emit_chars:
+                        chunks.append(chunk)
+                        start = idx + 1
+
+            self.merge_buffer = self.merge_buffer[start:].strip()
+
+            # Soft flush: keep speech flowing even without sentence-ending punctuation.
+            if len(self.merge_buffer) >= self.soft_flush_chars:
+                cut = self.merge_buffer.rfind(" ", 0, self.soft_flush_chars - 8)
+                if cut <= 0:
+                    cut = self.soft_flush_chars - 8
+                chunk = self.merge_buffer[:cut].strip()
+                if chunk:
+                    chunks.append(chunk + ".")
+                self.merge_buffer = self.merge_buffer[cut:].strip()
+
+            return chunks
+
+    def _flush_buffer_if_idle(self):
+        with self.merge_lock:
+            if not self.merge_buffer:
+                return None
+            if (time.monotonic() - self.merge_last_update) < self.merge_idle_flush_sec:
+                return None
+            chunk = self.merge_buffer.strip()
+            self.merge_buffer = ""
+            return chunk
 
     def clear_pending_texts(self):
         while True:
@@ -143,6 +201,29 @@ class TTSWorker(threading.Thread):
                     break
             except queue.Empty:
                 break
+
+    def trim_pending_texts(self, keep_latest=1):
+        kept = []
+        saw_stop = False
+        while True:
+            try:
+                item = self.text_queue.get_nowait()
+                if item is self.stop_token:
+                    saw_stop = True
+                    continue
+                kept.append(item)
+            except queue.Empty:
+                break
+
+        if keep_latest > 0 and kept:
+            kept = kept[-keep_latest:]
+        else:
+            kept = []
+
+        for item in kept:
+            self.text_queue.put(item)
+        if saw_stop:
+            self.text_queue.put(self.stop_token)
 
     def set_rate_multiplier(self, multiplier):
         with self.config_lock:
@@ -167,15 +248,18 @@ class TTSWorker(threading.Thread):
                 break
 
         with self.runtime_lock:
-            proc = self.current_proc
-            if proc and proc.poll() is None:
+            if self.current_proc and self.current_proc.poll() is None:
                 try:
-                    proc.terminate()
-                    proc.wait(timeout=0.2)
+                    self.current_proc.terminate()
+                    self.current_proc.wait(timeout=0.2)
                 except subprocess.TimeoutExpired:
-                    proc.kill()
+                    self.current_proc.kill()
                 except Exception as err:
-                    print(f"TTS stop error (pyttsx3 subprocess): {err}")
+                    print(f"TTS stop error (edge-tts playback): {err}")
+            self.current_proc = None
+
+        with self.merge_lock:
+            self.merge_buffer = ""
 
     def stop(self):
         self.text_queue.put(self.stop_token)
@@ -210,7 +294,7 @@ class Overlay(QWidget):
         self.running = False
         self.ocr_in_progress = False
         self.state_lock = threading.Lock()
-        self.tts_worker = TTSWorker(base_rate_wpm=260, rate_multiplier=1.0)
+        self.tts_worker = TTSWorker(base_rate_wpm=260, rate_multiplier=1.35)
         self.tts_worker.start()
 
         # Timer OCR
@@ -221,6 +305,7 @@ class Overlay(QWidget):
 
         self.start_action = None
         self.stop_action = None
+        self.warned_tts_unavailable = False
 
     # ================= DRAW =================
     def paintEvent(self, event):
@@ -407,6 +492,15 @@ class Overlay(QWidget):
     # ================= START / STOP =================
     def start_capture(self):
         if self.running:
+            return
+        if not self.tts_worker.use_edge_tts:
+            if not self.warned_tts_unavailable:
+                QMessageBox.warning(
+                    self,
+                    "TTS Unavailable",
+                    "edge-tts is not installed in the current Python environment.",
+                )
+                self.warned_tts_unavailable = True
             return
         self.running = True
         self.last_text = ""
