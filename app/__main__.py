@@ -4,8 +4,6 @@ import threading
 import subprocess
 import time
 import re
-import asyncio
-import tempfile
 import os
 import json
 import unicodedata
@@ -16,11 +14,6 @@ from PIL import Image
 from PyQt5.QtWidgets import QApplication, QWidget, QMenuBar, QAction, QInputDialog, QMessageBox
 from PyQt5.QtCore import Qt, QTimer, QRect, QPointF
 from PyQt5.QtGui import QPainter, QPen, QColor, QCursor, QIcon, QPixmap, QFont
-
-try:
-    import edge_tts
-except Exception:
-    edge_tts = None
 
 
 def create_app_icon():
@@ -47,114 +40,56 @@ class TTSWorker(threading.Thread):
     def __init__(self, base_rate_wpm=260, rate_multiplier=1.0):
         super().__init__(daemon=True)
         self.text_queue = queue.Queue()
-        self.audio_queue = queue.Queue()
         self.stop_token = object()
         self.base_rate_wpm = max(120, int(base_rate_wpm))
         self.rate_multiplier = max(0.1, float(rate_multiplier))
         self.config_lock = threading.Lock()
         self.runtime_lock = threading.Lock()
         self.current_proc = None
-        self.edge_voice = "en-US-AndrewMultilingualNeural"
-        self.use_edge_tts = edge_tts is not None
-        self.max_pending_texts = 1
-        self.max_pending_audio = 1
-        self.synth_thread = threading.Thread(target=self._synth_loop, daemon=True)
-        self.synth_thread.start()
+        self.use_say_tts = (sys.platform == "darwin")
+        self.say_voice = os.getenv("W3_TTS_SAY_VOICE", "Linh").strip()
 
-        if self.use_edge_tts:
-            print(f"TTS backend: edge-tts ({self.edge_voice})")
+        if self.use_say_tts:
+            print("TTS backend: macOS say")
         else:
-            print("TTS disabled: edge-tts is not installed")
+            print("TTS disabled: macOS 'say' is unavailable on this platform")
 
-    def _edge_rate(self):
-        multiplier = self.get_rate_multiplier()
-        percent = int(round((multiplier - 1.0) * 100))
-        return f"{percent:+d}%"
-
-    async def _edge_save(self, text, output_path):
-        communicator = edge_tts.Communicate(
-            text=text,
-            voice=self.edge_voice,
-            rate=self._edge_rate(),
-        )
-        await communicator.save(output_path)
-
-    def _synthesize_edge_tts(self, text):
-        if not self.use_edge_tts:
-            return None
-
-        media_path = None
+    def _play_text_with_say(self, text):
+        words = max(1, len(text.split()))
+        expected_sec = (words / max(self.get_rate_wpm(), 1)) * 60.0
+        timeout_sec = max(5.0, min(45.0, expected_sec * 2.5 + 2.0))
         try:
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp:
-                media_path = tmp.name
-
-            asyncio.run(self._edge_save(text, media_path))
-            return media_path
-        except Exception as err:
-            print(f"TTS error (edge-tts synth): {err}")
-            if media_path and os.path.exists(media_path):
-                try:
-                    os.remove(media_path)
-                except OSError:
-                    pass
-            return None
-
-    def _play_media_file(self, media_path):
-        try:
+            cmd = ["say", "-r", str(self.get_rate_wpm())]
+            if self.say_voice:
+                cmd.extend(["-v", self.say_voice])
+            cmd.append(text)
             with self.runtime_lock:
-                self.current_proc = subprocess.Popen(["afplay", media_path])
-            self.current_proc.wait(timeout=30)
+                self.current_proc = subprocess.Popen(cmd)
+            self.current_proc.wait(timeout=timeout_sec)
         except subprocess.TimeoutExpired:
-            print("TTS error (edge-tts playback): timeout")
+            print("TTS error (say playback): timeout")
             with self.runtime_lock:
                 if self.current_proc and self.current_proc.poll() is None:
                     self.current_proc.kill()
                 self.current_proc = None
         except Exception as err:
-            print(f"TTS error (edge-tts playback): {err}")
+            print(f"TTS error (say playback): {err}")
             with self.runtime_lock:
                 self.current_proc = None
         finally:
             with self.runtime_lock:
                 self.current_proc = None
-            if media_path and os.path.exists(media_path):
-                try:
-                    os.remove(media_path)
-                except OSError:
-                    pass
-
-    def _synth_loop(self):
-        while True:
-            try:
-                text = self.text_queue.get(timeout=0.1)
-            except queue.Empty:
-                continue
-
-            if text is self.stop_token:
-                self.audio_queue.put(self.stop_token)
-                break
-
-            media_path = self._synthesize_edge_tts(text)
-            if media_path:
-                if self.max_pending_audio > 0:
-                    self._trim_queue_for_realtime(
-                        self.audio_queue,
-                        keep_latest=max(0, self.max_pending_audio - 1),
-                        cleanup_media=True,
-                    )
-                self.audio_queue.put(media_path)
 
     def run(self):
         while True:
             try:
-                item = self.audio_queue.get(timeout=0.1)
+                item = self.text_queue.get(timeout=0.1)
             except queue.Empty:
                 continue
 
             if item is self.stop_token:
-                self.stop_speaking()
                 break
-            self._play_media_file(item)
+            self._play_text_with_say(item)
 
     def speak(self, text):
         normalized = " ".join(text.split()).strip()
@@ -162,45 +97,10 @@ class TTSWorker(threading.Thread):
             return
         # Reduce natural pause added by TTS at trailing punctuation boundaries.
         normalized = re.sub(r"\s*[,:;.!?]+\s*$", "", normalized).strip()
-        if not normalized:
+        # Avoid synthesizing tiny fragments too frequently; this hurts latency.
+        if not normalized or len(normalized) < 2:
             return
-        if self.max_pending_texts > 0:
-            self._trim_queue_for_realtime(
-                self.text_queue,
-                keep_latest=max(0, self.max_pending_texts - 1),
-            )
         self.text_queue.put(normalized)
-
-    def _trim_queue_for_realtime(self, target_queue, keep_latest, cleanup_media=False):
-        kept = []
-        dropped = []
-        saw_stop = False
-        while True:
-            try:
-                item = target_queue.get_nowait()
-                if item is self.stop_token:
-                    saw_stop = True
-                    continue
-                kept.append(item)
-            except queue.Empty:
-                break
-
-        if keep_latest < len(kept):
-            dropped = kept[:-keep_latest] if keep_latest > 0 else kept
-            kept = kept[-keep_latest:] if keep_latest > 0 else []
-
-        for item in kept:
-            target_queue.put(item)
-        if saw_stop:
-            target_queue.put(self.stop_token)
-
-        if cleanup_media:
-            for item in dropped:
-                if isinstance(item, str) and os.path.exists(item):
-                    try:
-                        os.remove(item)
-                    except OSError:
-                        pass
 
     def set_rate_multiplier(self, multiplier):
         with self.config_lock:
@@ -215,8 +115,14 @@ class TTSWorker(threading.Thread):
             return max(120, int(self.base_rate_wpm * self.rate_multiplier))
 
     def stop_speaking(self):
-        self._trim_queue_for_realtime(self.text_queue, keep_latest=0)
-        self._trim_queue_for_realtime(self.audio_queue, keep_latest=0, cleanup_media=True)
+        while True:
+            try:
+                item = self.text_queue.get_nowait()
+                if item is self.stop_token:
+                    self.text_queue.put(self.stop_token)
+                    break
+            except queue.Empty:
+                break
 
         with self.runtime_lock:
             if self.current_proc and self.current_proc.poll() is None:
@@ -226,7 +132,7 @@ class TTSWorker(threading.Thread):
                 except subprocess.TimeoutExpired:
                     self.current_proc.kill()
                 except Exception as err:
-                    print(f"TTS stop error (edge-tts playback): {err}")
+                    print(f"TTS stop error (playback): {err}")
             self.current_proc = None
 
     def stop(self):
@@ -245,7 +151,6 @@ class Overlay(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setStyleSheet("background: transparent;")
 
-        self.margin = 12
         self.resizing = None
         self.min_width = 200
         self.min_height = 100
@@ -271,7 +176,7 @@ class Overlay(QWidget):
         self.timer = QTimer()
         self.timer.setTimerType(Qt.PreciseTimer)
         self.timer.timeout.connect(self.capture_area)
-        self.capture_interval_ms = 350
+        self.capture_interval_ms = 120
 
         self.start_action = None
         self.stop_action = None
@@ -385,7 +290,7 @@ class Overlay(QWidget):
         else:
             self.setCursor(QCursor(Qt.ArrowCursor))
 
-        if not hasattr(self, "resizing") or not self.resizing:
+        if not self.resizing:
             return
 
         delta = event.globalPos() - self.start_pos
@@ -404,8 +309,10 @@ class Overlay(QWidget):
             self.setGeometry(geom)
 
     def mouseReleaseEvent(self, event):
+        had_active_resize = self.resizing is not None
         self.resizing = None
-        self.save_current_geometry()
+        if had_active_resize:
+            self.save_current_geometry()
 
     def closeEvent(self, event):
         self.save_current_geometry()
@@ -494,12 +401,12 @@ class Overlay(QWidget):
     def start_capture(self):
         if self.running:
             return
-        if not self.tts_worker.use_edge_tts:
+        if not self.tts_worker.use_say_tts:
             if not self.warned_tts_unavailable:
                 QMessageBox.warning(
                     self,
                     "TTS Unavailable",
-                    "edge-tts is not installed in the current Python environment.",
+                    "macOS 'say' is unavailable in the current environment.",
                 )
                 self.warned_tts_unavailable = True
             return
@@ -603,6 +510,7 @@ class Overlay(QWidget):
                 if self.last_text_cmp:
                     if normalized_text.startswith(self.last_text):
                         suffix = normalized_text[len(self.last_text):].strip()
+                        # Wait for a minimally meaningful delta to reduce TTS churn.
                         if len(suffix) < 2:
                             return
                         text_to_speak = suffix
@@ -618,7 +526,6 @@ class Overlay(QWidget):
 
                 next_last_text = normalized_text
                 next_last_cmp = cmp_text
-                text_to_speak = self.sanitize_ocr_text(text_to_speak)
                 if self.is_noise_text(text_to_speak):
                     return
                 speak_cmp = self.make_compare_key(text_to_speak)
