@@ -1,9 +1,10 @@
 import os
 import queue
-import re
 import subprocess
 import sys
 import threading
+
+from pydash import strings as pydash_strings
 
 
 class TTSWorker(threading.Thread):
@@ -62,15 +63,31 @@ class TTSWorker(threading.Thread):
             self._play_text_with_say(item)
 
     def speak(self, text):
-        normalized = " ".join(text.split()).strip()
-        if not normalized:
+        prepared = self.prepare_text(text)
+        if not prepared:
             return
-        # Reduce natural pause added by TTS at trailing punctuation boundaries.
-        normalized = re.sub(r"\s*[,:;.!?]+\s*$", "", normalized).strip()
+        self.text_queue.put(prepared)
+
+    def prepare_text(self, text):
+        normalized = self._normalize_tts_text(text)
+        if not normalized:
+            return ""
+        normalized = pydash_strings.trim_end(normalized, " ,:;.!?")
         # Avoid synthesizing tiny fragments too frequently; this hurts latency.
         if not normalized or len(normalized) < 2:
-            return
-        self.text_queue.put(normalized)
+            return ""
+        return normalized
+
+    def _normalize_tts_text(self, text):
+        normalized = pydash_strings.trim(text)
+        if not normalized:
+            return ""
+        # pydash words handles snake_case and camelCase/PascalCase split
+        # without forcing title-case on full Vietnamese sentences.
+        tokens = pydash_strings.words(normalized)
+        if not tokens:
+            return ""
+        return pydash_strings.trim(" ".join(tokens))
 
     def set_rate_multiplier(self, multiplier):
         with self.config_lock:

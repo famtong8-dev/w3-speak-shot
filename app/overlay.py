@@ -417,8 +417,11 @@ class Overlay(QWidget):
                 self.recent_spoken[speak_cmp] = time.monotonic()
 
             if text_to_speak:
-                print("Detected:", text_to_speak)
-                self.tts_worker.speak(text_to_speak)
+                prepared_text = self.tts_worker.prepare_text(text_to_speak)
+                if not prepared_text:
+                    return
+                print("Detected:", prepared_text)
+                self.tts_worker.speak(prepared_text)
                 with self.state_lock:
                     self.last_text = next_last_text
                     self.last_text_cmp = next_last_cmp
