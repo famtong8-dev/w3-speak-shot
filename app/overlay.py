@@ -8,7 +8,7 @@ from difflib import SequenceMatcher
 
 import mss
 import pytesseract
-from PIL import Image
+from PIL import Image, ImageDraw
 from PyQt5.QtCore import Qt, QTimer, QRect, QPointF
 from PyQt5.QtGui import QPainter, QPen, QColor, QCursor
 from PyQt5.QtWidgets import QWidget, QInputDialog, QMessageBox, QApplication
@@ -37,6 +37,8 @@ class Overlay(QWidget):
         self.min_height = 100
         self.resize_handle_size = 14
         self.move_handle_size = 14
+        self.status_indicator_size = 10
+        self.close_button_size = 14
         self.setMouseTracking(True)
         self.restore_last_geometry()
 
@@ -62,6 +64,8 @@ class Overlay(QWidget):
         self.start_action = None
         self.stop_action = None
         self.warned_tts_unavailable = False
+        # Keep overlay stable while capturing; hiding/showing each frame causes visible jitter.
+        self.hide_overlay_during_capture = False
 
     # ================= DRAW =================
     def paintEvent(self, event):
@@ -76,14 +80,24 @@ class Overlay(QWidget):
         # Top-right resize handle
         move_handle = self.move_handle_rect()
         resize_handle = self.resize_handle_rect()
+        status_indicator = self.status_indicator_rect()
+        close_button = self.close_button_rect()
 
         painter.fillRect(move_handle, QColor(255, 255, 255, 210))
         painter.fillRect(resize_handle, QColor(255, 255, 255, 210))
+        if self.running:
+            painter.fillRect(status_indicator, QColor(46, 204, 113))
+        else:
+            painter.fillRect(status_indicator, QColor(170, 170, 170, 180))
+        painter.fillRect(close_button, QColor(255, 255, 255, 210))
         painter.setPen(QPen(QColor(255, 0, 0), 2))
         painter.drawRect(move_handle)
         painter.drawRect(resize_handle)
+        painter.drawRect(status_indicator)
+        painter.drawRect(close_button)
         self.draw_move_icon(painter, move_handle)
         self.draw_resize_icon(painter, resize_handle)
+        self.draw_close_icon(painter, close_button)
 
     def draw_move_icon(self, painter, rect):
         cx = rect.x() + (rect.width() / 2.0)
@@ -132,6 +146,16 @@ class Overlay(QWidget):
         painter.drawLine(left, bottom, left + 3, bottom)
         painter.drawLine(left, bottom, left, bottom - 3)
 
+    def draw_close_icon(self, painter, rect):
+        left = rect.left() + 4
+        top = rect.top() + 4
+        right = rect.right() - 4
+        bottom = rect.bottom() - 4
+        icon_pen = QPen(QColor(200, 0, 0), 2)
+        painter.setPen(icon_pen)
+        painter.drawLine(left, top, right, bottom)
+        painter.drawLine(left, bottom, right, top)
+
     def move_handle_rect(self):
         padding = 6
         return QRect(
@@ -150,11 +174,32 @@ class Overlay(QWidget):
             self.resize_handle_size,
         )
 
+    def status_indicator_rect(self):
+        padding = 6
+        return QRect(
+            padding,
+            self.height() - self.status_indicator_size - padding,
+            self.status_indicator_size,
+            self.status_indicator_size,
+        )
+
+    def close_button_rect(self):
+        padding = 6
+        return QRect(
+            self.width() - self.close_button_size - padding,
+            self.height() - self.close_button_size - padding,
+            self.close_button_size,
+            self.close_button_size,
+        )
+
     # ================= MOUSE EVENTS =================
     def mousePressEvent(self, event):
         self.start_pos = event.globalPos()
         self.start_geom = self.geometry()
 
+        if self.close_button_rect().contains(event.pos()):
+            self.close()
+            return
         if self.move_handle_rect().contains(event.pos()):
             self.resizing = "move_handle"
         elif self.resize_handle_rect().contains(event.pos()):
@@ -164,7 +209,9 @@ class Overlay(QWidget):
 
     def mouseMoveEvent(self, event):
         # Cursor change
-        if self.move_handle_rect().contains(event.pos()):
+        if self.close_button_rect().contains(event.pos()):
+            self.setCursor(QCursor(Qt.PointingHandCursor))
+        elif self.move_handle_rect().contains(event.pos()):
             self.setCursor(QCursor(Qt.SizeAllCursor))
         elif self.resize_handle_rect().contains(event.pos()):
             self.setCursor(QCursor(Qt.SizeBDiagCursor))
@@ -298,6 +345,7 @@ class Overlay(QWidget):
         self.recent_spoken.clear()
         self.timer.start(self.capture_interval_ms)
         self.update_capture_actions()
+        self.update()
 
     def stop_capture(self):
         if not self.running:
@@ -308,6 +356,7 @@ class Overlay(QWidget):
         self.recent_spoken.clear()
         self.tts_worker.stop_speaking()
         self.update_capture_actions()
+        self.update()
 
     def update_capture_actions(self):
         if self.start_action is None or self.stop_action is None:
@@ -324,8 +373,9 @@ class Overlay(QWidget):
 
         worker_started = False
         try:
-            self.setWindowOpacity(0)
-            QApplication.processEvents()
+            if self.hide_overlay_during_capture:
+                self.setWindowOpacity(0)
+                QApplication.processEvents()
 
             geo = self.geometry()
 
@@ -334,12 +384,14 @@ class Overlay(QWidget):
                     "top": geo.y(),
                     "left": geo.x(),
                     "width": geo.width(),
-                    "height": geo.height()
+                    "height": geo.height(),
                 }
                 screenshot = sct.grab(monitor)
                 img = Image.frombytes("RGB", screenshot.size, screenshot.rgb)
+                self.mask_overlay_artifacts_for_ocr(img)
 
-            self.setWindowOpacity(1)
+            if self.hide_overlay_during_capture:
+                self.setWindowOpacity(1)
             signature = img.convert("L").resize((64, 36)).tobytes()
             if signature == self.last_frame_signature:
                 with self.state_lock:
@@ -354,11 +406,36 @@ class Overlay(QWidget):
             worker_started = True
         except Exception as err:
             print(f"Capture error: {err}")
-            self.setWindowOpacity(1)
+            if self.hide_overlay_during_capture:
+                self.setWindowOpacity(1)
         finally:
             if not worker_started:
                 with self.state_lock:
                     self.ocr_in_progress = False
+
+    def mask_overlay_artifacts_for_ocr(self, img):
+        # Remove overlay controls and border from OCR input without cropping content.
+        draw = ImageDraw.Draw(img)
+        width, height = img.size
+        border = 4
+        draw.rectangle((0, 0, width - 1, border), fill=(255, 255, 255))
+        draw.rectangle((0, height - border - 1, width - 1, height - 1), fill=(255, 255, 255))
+        draw.rectangle((0, 0, border, height - 1), fill=(255, 255, 255))
+        draw.rectangle((width - border - 1, 0, width - 1, height - 1), fill=(255, 255, 255))
+
+        expand = 3
+        rects = [
+            self.move_handle_rect(),
+            self.resize_handle_rect(),
+            self.status_indicator_rect(),
+            self.close_button_rect(),
+        ]
+        for rect in rects:
+            left = max(0, rect.left() - expand)
+            top = max(0, rect.top() - expand)
+            right = min(width - 1, rect.right() + expand)
+            bottom = min(height - 1, rect.bottom() + expand)
+            draw.rectangle((left, top, right, bottom), fill=(255, 255, 255))
 
     def process_image(self, img):
         try:
