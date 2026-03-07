@@ -4,4 +4,5 @@ pyttsx3
 PyQt5
 pillow
 pydash
-lingua-language-detector
+numpy<2
+fasttext-wheel

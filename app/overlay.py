@@ -4,6 +4,7 @@ import re
 import threading
 import time
 import unicodedata
+from datetime import datetime
 from difflib import SequenceMatcher
 
 import mss
@@ -37,7 +38,7 @@ class Overlay(QWidget):
         self.min_height = 100
         self.resize_handle_size = 14
         self.move_handle_size = 14
-        self.status_indicator_size = 10
+        self.status_indicator_size = 14
         self.close_button_size = 14
         self.setMouseTracking(True)
         self.restore_last_geometry()
@@ -497,7 +498,8 @@ class Overlay(QWidget):
                 prepared_text = self.tts_worker.prepare_text(text_to_speak)
                 if not prepared_text:
                     return
-                print("Detected:", prepared_text)
+                detected_at = datetime.now().astimezone().isoformat(timespec="milliseconds")
+                print(f"Detected [{detected_at}]: {prepared_text}")
                 self.tts_worker.speak(prepared_text)
                 with self.state_lock:
                     self.last_text = next_last_text
@@ -514,6 +516,52 @@ class Overlay(QWidget):
         normalized = re.sub(r"\s+", " ", normalized).strip()
         return normalized
 
+    @staticmethod
+    def is_supported_letter(ch):
+        if not ch or not ch.isalpha():
+            return False
+
+        decomposed = unicodedata.normalize("NFD", ch)
+        base_letters = [c for c in decomposed if unicodedata.category(c).startswith("L")]
+        if not base_letters:
+            return False
+
+        base = base_letters[0].lower()
+        if base not in "abcdefghijklmnopqrstuvwxyzđ":
+            return False
+
+        allowed_marks = {
+            "\u0300",  # grave
+            "\u0301",  # acute
+            "\u0303",  # tilde
+            "\u0309",  # hook above
+            "\u0323",  # dot below
+            "\u0306",  # breve
+            "\u0302",  # circumflex
+            "\u031b",  # horn
+        }
+        for c in decomposed:
+            if unicodedata.category(c).startswith("M") and c not in allowed_marks:
+                return False
+        return True
+
+    @staticmethod
+    def strip_marks(value):
+        decomposed = unicodedata.normalize("NFD", value)
+        return "".join(ch for ch in decomposed if unicodedata.category(ch) != "Mn")
+
+    def is_garbled_token(self, token):
+        letters = "".join(ch for ch in token if ch.isalpha())
+        if len(letters) < 3:
+            return False
+        base = re.sub(r"[^a-zđ]", "", self.strip_marks(letters).lower())
+        if len(base) < 3:
+            return True
+        # Drop artifacts like "aáa", "ooo", "ụụu" that are unlikely words.
+        if len(set(base)) == 1:
+            return True
+        return False
+
     def sanitize_ocr_text(self, value):
         allowed_punct = set(" .,;:!?-()/+&%$@#'\"")
         filtered = []
@@ -527,7 +575,7 @@ class Overlay(QWidget):
             if "0" <= ch <= "9":
                 filtered.append(ch)
                 continue
-            if unicodedata.category(ch).startswith("L"):
+            if self.is_supported_letter(ch):
                 filtered.append(ch)
                 continue
 
@@ -535,9 +583,19 @@ class Overlay(QWidget):
         if not normalized:
             return ""
 
+        parts = [part for part in normalized.split() if not self.is_garbled_token(part)]
+        normalized = " ".join(parts).strip()
+        if not normalized:
+            return ""
+
         # OCR often appends a dangling 1-char token (for example: "... , h").
         parts = normalized.split()
-        if len(parts) >= 4 and len(parts[-1]) == 1 and parts[-1].lower() not in {"a", "i"}:
+        if (
+            len(parts) >= 4
+            and len(parts[-1]) == 1
+            and parts[-1].isalpha()
+            and parts[-1].lower() not in {"a", "i"}
+        ):
             normalized = " ".join(parts[:-1]).strip()
         return normalized
 
