@@ -96,14 +96,13 @@ flowchart TD
 - `W3_TTS_SAY_EN_VOICE` (default: auto fallback): English voice.
 - `W3_TTS_MULTI_VOICE_MODE` (default: `segment`): `segment` or `markup`.
 - `W3_TTS_SPELL_ACRONYMS` (default: `1`): spell acronyms (`SDK`, `KMS`, ...).
-- `W3_TTS_DETECT_EN_WORDS` (default: `1`): enable English phrase detection.
+- `W3_TTS_DETECT_EN_WORDS` (default: `1`): enable English phrase detection (fastText + rules).
 - `W3_TTS_DEBUG_LANG` (default: `0`): print language-detection debug logs.
 - `W3_TTS_FASTTEXT_MODEL`: custom path to fastText model.
 - `W3_TTS_FASTTEXT_EN_THRESHOLD` (default: `0.80`): EN confidence threshold.
 - `W3_TTS_FASTTEXT_MARGIN_THRESHOLD` (default: `0.12`): confidence margin.
 - `W3_TTS_FASTTEXT_MIN_PHRASE_WORDS` (default: `2`): min words per phrase window.
 - `W3_TTS_FASTTEXT_MAX_PHRASE_WORDS` (default: `4`): max words per phrase window.
-- `W3_TTS_EN_HINT_WORDS`: technical keywords to bias EN phrase detection.
 
 Example:
 

@@ -67,8 +67,6 @@ class Overlay(QWidget):
         self.start_action = None
         self.stop_action = None
         self.warned_tts_unavailable = False
-        # Keep overlay stable while capturing; hiding/showing each frame causes visible jitter.
-        self.hide_overlay_during_capture = False
 
     # ================= DRAW =================
     def paintEvent(self, event):
@@ -376,10 +374,6 @@ class Overlay(QWidget):
 
         worker_started = False
         try:
-            if self.hide_overlay_during_capture:
-                self.setWindowOpacity(0)
-                QApplication.processEvents()
-
             geo = self.geometry()
 
             with mss.mss() as sct:
@@ -393,8 +387,6 @@ class Overlay(QWidget):
                 img = Image.frombytes("RGB", screenshot.size, screenshot.rgb)
                 self.mask_overlay_artifacts_for_ocr(img)
 
-            if self.hide_overlay_during_capture:
-                self.setWindowOpacity(1)
             signature = img.convert("L").resize((64, 36)).tobytes()
             if signature == self.last_frame_signature:
                 with self.state_lock:
@@ -409,8 +401,6 @@ class Overlay(QWidget):
             worker_started = True
         except Exception as err:
             print(f"Capture error: {err}")
-            if self.hide_overlay_during_capture:
-                self.setWindowOpacity(1)
         finally:
             if not worker_started:
                 with self.state_lock:
