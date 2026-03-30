@@ -62,15 +62,6 @@ class TTSWorker(threading.Thread):
             self.fasttext_min_phrase_words = 2
         if self.fasttext_max_phrase_words < self.fasttext_min_phrase_words:
             self.fasttext_max_phrase_words = self.fasttext_min_phrase_words
-        hint_words_raw = os.getenv(
-            "W3_TTS_EN_HINT_WORDS",
-            "api,sdk,kms,aws,cloud,http,https,json,token,generate,data,datakey,key,encrypt,decrypt,random,byte,kilobyte",
-        )
-        self.english_hint_words = {
-            pydash_strings.trim(word).lower()
-            for word in hint_words_raw.split(",")
-            if pydash_strings.trim(word)
-        }
         self.segmenter = TTSSegmenter(
             spell_english_acronyms=self.spell_english_acronyms,
             detect_english_words=self.detect_english_words,
@@ -79,7 +70,6 @@ class TTSWorker(threading.Thread):
             fasttext_margin_threshold=self.fasttext_margin_threshold,
             fasttext_min_phrase_words=self.fasttext_min_phrase_words,
             fasttext_max_phrase_words=self.fasttext_max_phrase_words,
-            english_hint_words=self.english_hint_words,
         )
 
         if self.use_say_tts:

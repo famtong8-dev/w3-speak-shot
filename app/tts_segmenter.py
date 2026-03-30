@@ -14,7 +14,6 @@ class TTSSegmenter:
         fasttext_margin_threshold,
         fasttext_min_phrase_words,
         fasttext_max_phrase_words,
-        english_hint_words,
     ):
         self.spell_english_acronyms = bool(spell_english_acronyms)
         self.detect_english_words = bool(detect_english_words)
@@ -23,7 +22,6 @@ class TTSSegmenter:
         self.fasttext_margin_threshold = float(fasttext_margin_threshold)
         self.fasttext_min_phrase_words = max(2, int(fasttext_min_phrase_words))
         self.fasttext_max_phrase_words = max(self.fasttext_min_phrase_words, int(fasttext_max_phrase_words))
-        self.english_hint_words = set(english_hint_words)
         self.fasttext_model = None
         self.fasttext_cache = {}
         self.fasttext_cache_max = 512
@@ -104,9 +102,6 @@ class TTSSegmenter:
     def _is_technical_english_token(self, token):
         if not token:
             return False
-        lowered = token.lower()
-        if lowered in self.english_hint_words:
-            return True
         if token.isupper() and len(token) >= 2 and self.spell_english_acronyms:
             return True
         if self._is_camel_or_pascal(token):
@@ -115,10 +110,6 @@ class TTSSegmenter:
 
     def _get_technical_english_positions(self, tokens):
         if not tokens:
-            return []
-
-        normalized_tokens = [token.lower() for token in tokens]
-        if not any(token in self.english_hint_words for token in normalized_tokens):
             return []
 
         positions = [idx for idx, token in enumerate(tokens) if self._is_technical_english_token(token)]
