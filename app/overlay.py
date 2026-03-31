@@ -11,7 +11,7 @@ import pytesseract
 from PIL import Image, ImageDraw
 from PyQt5.QtCore import Qt, QTimer, QRect, QPointF
 from PyQt5.QtGui import QPainter, QPen, QColor, QCursor
-from PyQt5.QtWidgets import QWidget, QInputDialog, QMessageBox, QApplication
+from PyQt5.QtWidgets import QWidget, QInputDialog, QMessageBox
 
 try:
     from .overlay_text import OCRTextProcessor
@@ -223,7 +223,6 @@ class Overlay(QWidget):
             return
 
         delta = event.globalPos() - self.start_pos
-        geom = QRect(self.start_geom)
 
         if self.resizing == "move_handle":
             self.move(self.start_geom.topLeft() + delta)
@@ -232,6 +231,7 @@ class Overlay(QWidget):
             new_width = max(self.min_width, self.start_geom.width() + delta.x())
             new_height = max(self.min_height, self.start_geom.height() - delta.y())
 
+            geom = QRect(self.start_geom)
             geom.setWidth(new_width)
             bottom = self.start_geom.bottom()
             geom.setTop(bottom - new_height + 1)
