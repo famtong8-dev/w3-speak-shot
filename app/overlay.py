@@ -1,5 +1,4 @@
-import json
-import os
+import logging
 import re
 import threading
 import time
@@ -16,17 +15,31 @@ from PyQt5.QtWidgets import QWidget, QInputDialog, QMessageBox
 try:
     from .overlay_text import OCRTextProcessor
     from .tts_worker import TTSWorker
+    from .config import WindowGeometryConfig
 except ImportError:
     from overlay_text import OCRTextProcessor
     from tts_worker import TTSWorker
+    from config import WindowGeometryConfig
+
+logger = logging.getLogger(__name__)
 
 
 class Overlay(QWidget):
+    """
+    Frameless overlay window for capturing screen regions and performing OCR.
+
+    Provides a draggable/resizable window that:
+    - Captures the selected screen region at regular intervals
+    - Runs OCR on captured frames using Tesseract
+    - Detects and speaks new text via TTS
+    - Persists window geometry between sessions
+    """
+
     def __init__(self):
         super().__init__()
 
         self.setGeometry(300, 200, 600, 250)
-        self.window_state_path = os.path.join(os.path.dirname(__file__), ".overlay_state.json")
+        self.geometry_config = WindowGeometryConfig()
 
         self.base_window_flags = Qt.FramelessWindowHint | Qt.Window
         self.apply_window_flags()
@@ -251,33 +264,27 @@ class Overlay(QWidget):
         super().closeEvent(event)
 
     def restore_last_geometry(self):
-        try:
-            if not os.path.exists(self.window_state_path):
-                return
-            with open(self.window_state_path, "r", encoding="utf-8") as handle:
-                data = json.load(handle)
+        """Restore window geometry from saved config."""
+        data = self.geometry_config.load()
+        if data is None:
+            return
 
-            x = int(data.get("x"))
-            y = int(data.get("y"))
-            width = max(self.min_width, int(data.get("width")))
-            height = max(self.min_height, int(data.get("height")))
-            self.setGeometry(x, y, width, height)
-        except Exception as err:
-            print(f"Window state restore error: {err}")
+        x = data["x"]
+        y = data["y"]
+        width = max(self.min_width, data["width"])
+        height = max(self.min_height, data["height"])
+        self.setGeometry(x, y, width, height)
+        logger.debug(f"Restored geometry: x={x} y={y} w={width} h={height}")
 
     def save_current_geometry(self):
-        try:
-            geom = self.geometry()
-            payload = {
-                "x": int(geom.x()),
-                "y": int(geom.y()),
-                "width": int(geom.width()),
-                "height": int(geom.height()),
-            }
-            with open(self.window_state_path, "w", encoding="utf-8") as handle:
-                json.dump(payload, handle)
-        except Exception as err:
-            print(f"Window state save error: {err}")
+        """Save current window geometry to config."""
+        geom = self.geometry()
+        self.geometry_config.save(
+            x=geom.x(),
+            y=geom.y(),
+            width=geom.width(),
+            height=geom.height(),
+        )
 
     def apply_window_flags(self):
         flags = self.base_window_flags | Qt.WindowStaysOnTopHint
@@ -313,7 +320,7 @@ class Overlay(QWidget):
             return
 
         self.tts_worker.set_rate_multiplier(multiplier)
-        print(f"TTS speed set to {multiplier:g}x ({self.tts_worker.get_rate_wpm()} wpm)")
+        logger.info(f"TTS speed set to {multiplier:g}x ({self.tts_worker.get_rate_wpm()} wpm)")
 
     def parse_speed_multiplier(self, value):
         raw = value.strip().lower()
@@ -328,6 +335,7 @@ class Overlay(QWidget):
 
     # ================= START / STOP =================
     def start_capture(self):
+        """Start the OCR capture loop."""
         if self.running:
             return
         if not self.tts_worker.use_say_tts:
@@ -349,6 +357,7 @@ class Overlay(QWidget):
         self.update()
 
     def stop_capture(self):
+        """Stop the OCR capture loop and clear spoken text cache."""
         if not self.running:
             return
         self.running = False
@@ -367,6 +376,7 @@ class Overlay(QWidget):
 
     # ================= OCR CAPTURE =================
     def capture_area(self):
+        """Capture overlay region and check for frame changes before OCR."""
         with self.state_lock:
             if self.ocr_in_progress:
                 return
@@ -400,7 +410,7 @@ class Overlay(QWidget):
             ).start()
             worker_started = True
         except Exception as err:
-            print(f"Capture error: {err}")
+            logger.error(f"Capture error: {err}")
         finally:
             if not worker_started:
                 with self.state_lock:
@@ -431,6 +441,7 @@ class Overlay(QWidget):
             draw.rectangle((left, top, right, bottom), fill=(255, 255, 255))
 
     def process_image(self, img):
+        """Run OCR on captured image, filter for new text, and queue for TTS."""
         try:
             gray = img.convert("L")
             text = pytesseract.image_to_string(
@@ -491,13 +502,13 @@ class Overlay(QWidget):
                 if not prepared_text:
                     return
                 detected_at = datetime.now().astimezone().isoformat(timespec="milliseconds")
-                print(f"Detected [{detected_at}]: {prepared_text}")
+                logger.info(f"Detected [{detected_at}]: {prepared_text}")
                 self.tts_worker.speak(prepared_text)
                 with self.state_lock:
                     self.last_text = next_last_text
                     self.last_text_cmp = next_last_cmp
         except Exception as err:
-            print(f"OCR error: {err}")
+            logger.error(f"OCR error: {err}")
         finally:
             with self.state_lock:
                 self.ocr_in_progress = False

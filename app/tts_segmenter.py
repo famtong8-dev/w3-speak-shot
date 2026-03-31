@@ -1,9 +1,18 @@
+import logging
 import re
 
 from pydash import strings as pydash_strings
 
+logger = logging.getLogger(__name__)
+
 
 class TTSSegmenter:
+    """
+    Segments text for bilingual English/Vietnamese text-to-speech playback.
+
+    Detects English phrases and tokens using fastText language detection and rule-based
+    heuristics (acronyms, camelCase), enabling per-segment voice switching.
+    """
     def __init__(
         self,
         *,
@@ -27,12 +36,14 @@ class TTSSegmenter:
         self.fasttext_cache_max = 512
 
     def set_fasttext_model(self, model):
+        """Set the fastText language detection model."""
         self.fasttext_model = model
         self.fasttext_cache.clear()
 
     def _log_lang_debug(self, message):
+        """Log language detection debug message if debugging is enabled."""
         if self.debug_lang_detection:
-            print(f"TTS lang-debug: {message}")
+            logger.debug(message)
 
     @staticmethod
     def _is_english_label(label):
@@ -184,6 +195,7 @@ class TTSSegmenter:
         return english_indexes
 
     def segment_text_for_say(self, text, say_voice, say_english_voice):
+        """Segment text into (text, voice) tuples for bilingual playback."""
         if not say_english_voice:
             return [(text, say_voice)]
         if say_english_voice == say_voice:
@@ -240,6 +252,7 @@ class TTSSegmenter:
         return merged
 
     def build_multivoice_markup(self, text, say_voice, say_english_voice):
+        """Build SSML-like voice markup for macOS say command."""
         if not say_english_voice or say_english_voice == say_voice:
             return text
 

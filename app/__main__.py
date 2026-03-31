@@ -5,12 +5,16 @@ from PyQt5.QtWidgets import QApplication, QMenuBar, QAction
 try:
     from .app_icon import create_app_icon
     from .overlay import Overlay
+    from .logging_config import setup_logging
 except ImportError:
     from app_icon import create_app_icon
     from overlay import Overlay
+    from logging_config import setup_logging
 
 
 def main():
+    """Initialize and run the w3-speak-shot application."""
+    setup_logging()
     app = QApplication(sys.argv)
     app_icon = create_app_icon()
     app.setWindowIcon(app_icon)
