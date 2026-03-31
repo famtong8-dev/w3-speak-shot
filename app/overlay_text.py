@@ -1,19 +1,10 @@
-"""Text processing and sanitization for OCR output."""
-
 import re
 import unicodedata
 
 
 class OCRTextProcessor:
-    """
-    Sanitizes, filters, and normalizes OCR text output.
-
-    Handles Vietnamese diacritics, removes noise, filters garbled tokens,
-    and provides comparison keys for duplicate detection.
-    """
     @staticmethod
     def make_compare_key(value):
-        """Create a normalized comparison key from text for duplicate detection."""
         normalized = value.lower().strip()
         normalized = re.sub(r"[^\w\s]", " ", normalized, flags=re.UNICODE)
         normalized = re.sub(r"\s+", " ", normalized).strip()
@@ -21,7 +12,6 @@ class OCRTextProcessor:
 
     @staticmethod
     def is_supported_letter(ch):
-        """Check if character is a valid letter (English or Vietnamese with diacritics)."""
         if not ch or not ch.isalpha():
             return False
 
@@ -51,12 +41,10 @@ class OCRTextProcessor:
 
     @staticmethod
     def strip_marks(value):
-        """Remove diacritical marks from Vietnamese text."""
         decomposed = unicodedata.normalize("NFD", value)
         return "".join(ch for ch in decomposed if unicodedata.category(ch) != "Mn")
 
     def is_garbled_token(self, token):
-        """Detect OCR artifacts and noise tokens."""
         letters = "".join(ch for ch in token if ch.isalpha())
         if len(letters) < 3:
             return False
@@ -69,7 +57,6 @@ class OCRTextProcessor:
         return False
 
     def sanitize_ocr_text(self, value):
-        """Clean and filter OCR output: remove invalid chars, noise tokens, dangling chars."""
         allowed_punct = set(" .,;:!?-()/+&%$@#'\"")
         filtered = []
         for ch in value:
@@ -108,7 +95,6 @@ class OCRTextProcessor:
 
     @staticmethod
     def is_noise_text(value):
-        """Check if text is noise (too few letters, too many digits, excessive repetition)."""
         if not value:
             return True
         letters = sum(1 for ch in value if ch.isalpha())

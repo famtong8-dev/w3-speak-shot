@@ -1,4 +1,3 @@
-import logging
 import os
 import queue
 import re
@@ -19,17 +18,8 @@ try:
 except ImportError:
     from tts_segmenter import TTSSegmenter
 
-logger = logging.getLogger(__name__)
-
 
 class TTSWorker(threading.Thread):
-    """
-    Background thread worker for text-to-speech playback.
-
-    Manages a queue of text to speak and orchestrates playback via macOS 'say' command.
-    Supports bilingual English/Vietnamese playback with language detection and voice switching.
-    """
-
     def __init__(self, base_rate_wpm=260, rate_multiplier=1.0):
         super().__init__(daemon=True)
         self.text_queue = queue.Queue()
@@ -111,12 +101,12 @@ class TTSWorker(threading.Thread):
                 self.say_voice = ""
             if not self.say_english_voice:
                 self.say_english_voice = self.say_voice
-            logger.info("TTS backend: macOS say")
-            logger.info(f"TTS voices: vi={self.say_voice or 'default'} en={self.say_english_voice or 'default'}")
+            print("TTS backend: macOS say")
+            print(f"TTS voices: vi={self.say_voice or 'default'} en={self.say_english_voice or 'default'}")
             if self.detect_english_words and self.fasttext_model is None:
-                logger.warning("TTS language detector: fastText unavailable (falling back to acronym/camel-case only)")
+                print("TTS language detector: fastText unavailable (falling back to acronym/camel-case only)")
         else:
-            logger.warning("TTS disabled: macOS 'say' is unavailable on this platform")
+            print("TTS disabled: macOS 'say' is unavailable on this platform")
 
     @staticmethod
     def _read_env_float(key, default):
@@ -164,7 +154,7 @@ class TTSWorker(threading.Thread):
         if requested:
             if requested in voices:
                 return requested
-            logger.warning(f"Voice `{requested}` not found, selecting fallback.")
+            print(f"Voice `{requested}` not found, selecting fallback.")
 
         for name in fallback_names:
             if name in voices:
@@ -205,10 +195,10 @@ class TTSWorker(threading.Thread):
                 continue
             try:
                 model = fasttext.load_model(str(model_path))
-                logger.info(f"TTS language detector: fastText ({model_path})")
+                print(f"TTS language detector: fastText ({model_path})")
                 return model
             except Exception as err:
-                logger.warning(f"TTS language detector: failed to load {model_path}: {err}")
+                print(f"TTS language detector: failed to load {model_path}: {err}")
         return None
 
     def _play_segment_with_say(self, text, voice):
@@ -250,13 +240,13 @@ class TTSWorker(threading.Thread):
                         return
                     self._play_segment_with_say(segment_text, voice)
         except subprocess.TimeoutExpired:
-            logger.error("TTS error (say playback): timeout")
+            print("TTS error (say playback): timeout")
             with self.runtime_lock:
                 if self.current_proc and self.current_proc.poll() is None:
                     self.current_proc.kill()
                 self.current_proc = None
         except Exception as err:
-            logger.error(f"TTS error (say playback): {err}")
+            print(f"TTS error (say playback): {err}")
             with self.runtime_lock:
                 self.current_proc = None
         finally:
@@ -276,14 +266,12 @@ class TTSWorker(threading.Thread):
             self._play_text_with_say(item)
 
     def speak(self, text):
-        """Queue text for asynchronous TTS playback."""
         prepared = self.prepare_text(text)
         if not prepared:
             return
         self.text_queue.put(prepared)
 
     def prepare_text(self, text):
-        """Normalize and prepare text for TTS synthesis."""
         normalized = self._normalize_tts_text(text)
         if not normalized:
             return ""
@@ -305,7 +293,6 @@ class TTSWorker(threading.Thread):
         return pydash_strings.trim(" ".join(tokens))
 
     def set_rate_multiplier(self, multiplier):
-        """Set the speech rate multiplier (1.0 = normal, 2.0 = double speed)."""
         with self.config_lock:
             self.rate_multiplier = max(0.1, float(multiplier))
 
@@ -318,7 +305,6 @@ class TTSWorker(threading.Thread):
             return max(120, int(self.base_rate_wpm * self.rate_multiplier))
 
     def stop_speaking(self):
-        """Stop current playback and clear pending queue."""
         self.stop_requested.set()
         while True:
             try:
@@ -337,9 +323,8 @@ class TTSWorker(threading.Thread):
                 except subprocess.TimeoutExpired:
                     self.current_proc.kill()
                 except Exception as err:
-                    logger.error(f"TTS stop error (playback): {err}")
+                    print(f"TTS stop error (playback): {err}")
             self.current_proc = None
 
     def stop(self):
-        """Stop the TTS worker thread gracefully."""
         self.text_queue.put(self.stop_token)

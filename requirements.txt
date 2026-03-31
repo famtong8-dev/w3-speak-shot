@@ -2,6 +2,3 @@ mss
 pytesseract
 PyQt5
 pydash
-Pillow
-fasttext-wheel
-numpy<2
