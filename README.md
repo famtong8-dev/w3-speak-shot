@@ -65,13 +65,20 @@ The app persists last window position/size in `app/store/.overlay_state.json`.
 
 ## Environment Variables
 
-| Variable              | Default | Description                                                     |
-| --------------------- | ------- | --------------------------------------------------------------- |
-| `W3_TTS_SPEED_FACTOR` | `1.5`   | Base audio speed-up factor (e.g. `1.0` = normal, `2.0` = 2x faster) |
+Copy `.env.example` to `.env` and adjust as needed — it is loaded automatically at startup:
 
 ```sh
-W3_TTS_SPEED_FACTOR=1.2 uv run python app
+cp .env.example .env
 ```
+
+| Variable              | Default | Description                                                          |
+| --------------------- | ------- | -------------------------------------------------------------------- |
+| `W3_TTS_SPEED_FACTOR` | `1.5`   | Base audio speed-up factor (e.g. `1.0` = normal, `2.0` = 2x faster) |
+| `W3_DEBUG_TTS_OUTPUT` | —       | Path to save TTS audio as WAV instead of playing                     |
+| `W3_KEEP_TEMP_AUDIO`  | `false` | Keep temp WAV files after playback                                   |
+| `W3_TEMP_AUDIO_DIR`   | sys tmp | Directory for temp WAV files                                         |
+
+Variables set in the shell take precedence over `.env`.
 
 ## How It Works
 

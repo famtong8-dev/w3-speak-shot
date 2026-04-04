@@ -5,3 +5,4 @@ Pillow>=10.0.0
 vieneu>=0.1.0
 sounddevice>=0.4.5
 scipy>=1.11.0
+dotenv

@@ -2,6 +2,11 @@ import logging
 import os
 import sys
 
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
 from PyQt5.QtWidgets import QActionGroup, QApplication, QMenuBar, QAction
