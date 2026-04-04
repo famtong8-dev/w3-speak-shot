@@ -50,6 +50,9 @@ def _convert_audio_to_array(audio):
 
 def _infer_and_convert(engine, text):
     """Infer audio and convert to numpy array."""
+    if "œ" in text:
+        logger.warning(f"[SKIP   ] contains 'œ': {text[:60]}")
+        return None
     try:
         audio = engine.infer(text=text)
         if audio is None:

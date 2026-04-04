@@ -120,6 +120,9 @@ class TTSWorker(threading.Thread):
         """Infer audio and convert to numpy array."""
         if not self.tts_engine:
             return None
+        if "œ" in text:
+            logger.warning(f"[SKIP   ] contains 'œ': {text[:60]}")
+            return None
         try:
             # Serialize infer calls to avoid race conditions
             with self.infer_lock:
