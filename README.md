@@ -57,16 +57,17 @@ uv run python app
 - Use the `Options` menu:
   - `Start` — begin screen capture and OCR
   - `Stop` — stop capture
-  - `Set Speed...` — adjust TTS playback speed
+  - `Speed` — adjust TTS playback speed (0.75x – 2x)
+  - `Auto Speed` — when enabled, automatically increases speed by +0.25x when the TTS queue has 2 or more pending items (default: off)
   - `Close App`
 
 The app persists last window position/size in `app/store/.overlay_state.json`.
 
 ## Environment Variables
 
-| Variable              | Default | Description                                                    |
-| --------------------- | ------- | -------------------------------------------------------------- |
-| `W3_TTS_SPEED_FACTOR` | `1.5`   | Audio speed-up factor (e.g. `1.0` = normal, `2.0` = 2x faster) |
+| Variable              | Default | Description                                                     |
+| --------------------- | ------- | --------------------------------------------------------------- |
+| `W3_TTS_SPEED_FACTOR` | `1.5`   | Base audio speed-up factor (e.g. `1.0` = normal, `2.0` = 2x faster) |
 
 ```sh
 W3_TTS_SPEED_FACTOR=1.2 uv run python app
@@ -85,11 +86,22 @@ flowchart TD
     F --> G{Meaningful New Text?}
     G -- No --> B
     G -- Yes --> H[TTSWorker prepare_text]
-    H --> I[Infer Audio with VieNeu Turbo<br/>Cache Result LRU]
-    I --> J[Queue for Playback]
-    J --> K[sounddevice Play Audio]
-    K --> B
+    H --> I{Skip?}
+    I -- contains œ --> B
+    I -- No --> J[Infer Audio with VieNeu Turbo<br/>Cache Result LRU]
+    J --> K{Audio too long?}
+    K -- Yes, likely stuck --> B
+    K -- No --> L[Queue for Playback]
+    L --> M[Play Audio via temp WAV file]
+    M --> B
 ```
+
+## Skip Conditions
+
+The TTS worker silently skips a segment and logs `[SKIP   ]` when:
+
+- The text contains `œ` — indicates garbled/corrupt OCR output.
+- The generated audio duration exceeds `max(5.0, len(text) * 0.15)` seconds — indicates the model entered a stuck/looping state.
 
 ## Source Structure
 
@@ -113,17 +125,34 @@ Uses **VieNeu-TTS Turbo** (`TurboVieNeuTTS`) — GGUF/ONNX format, runs on CPU w
 - Max context: 4 096 tokens
 - Supports bilingual text (English + Vietnamese) without pre-segmentation
 
+## Testing
+
+Generate WAV files from `data/dataset-test.txt` to verify TTS output:
+
+```sh
+# Test a single sentence
+W3_TTS_SPEED_FACTOR=1.5 uv run test_dataset.py --text "your sentence here"
+
+# Generate one WAV per line → test/001_....wav
+W3_TTS_SPEED_FACTOR=1.5 uv run test_dataset.py
+
+# Merge all lines into a single file → test/merged.wav + test/merged_index.txt
+W3_TTS_SPEED_FACTOR=1.5 uv run test_dataset.py --merge
+```
+
+`merged_index.txt` contains per-segment timestamps for easy audio inspection.
+
 ## Troubleshooting
 
 **`TTS initialization error`**
 ```sh
-uv pip install vieneu sounddevice
+uv pip install vieneu
 ```
 
-**No audio output**
+**No audio output (Linux)**
 ```sh
-# Check available audio devices
-uv run python -c "import sounddevice; print(sounddevice.query_devices())"
+# Ensure paplay is available (used for playback)
+sudo apt-get install pulseaudio-utils
 ```
 
 **OCR returns noisy text**
