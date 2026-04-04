@@ -1,7 +1,7 @@
-mss
-pytesseract
-PyQt5
-pydash
-Pillow
-fasttext-wheel
-numpy<2
+mss>=3.9.0
+pytesseract>=0.3.10
+PyQt5>=5.15.0
+Pillow>=10.0.0
+vieneu>=0.1.0
+sounddevice>=0.4.5
+scipy>=1.11.0

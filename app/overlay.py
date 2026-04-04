@@ -1,6 +1,6 @@
 import json
+import logging
 import os
-import re
 import threading
 import time
 from datetime import datetime
@@ -11,7 +11,9 @@ import pytesseract
 from PIL import Image, ImageDraw
 from PyQt5.QtCore import Qt, QTimer, QRect, QPointF
 from PyQt5.QtGui import QPainter, QPen, QColor, QCursor
-from PyQt5.QtWidgets import QWidget, QInputDialog, QMessageBox
+from PyQt5.QtWidgets import QWidget
+
+logger = logging.getLogger(__name__)
 
 try:
     from .overlay_text import OCRTextProcessor
@@ -26,7 +28,7 @@ class Overlay(QWidget):
         super().__init__()
 
         self.setGeometry(300, 200, 600, 250)
-        self.window_state_path = os.path.join(os.path.dirname(__file__), ".overlay_state.json")
+        self.window_state_path = os.path.join(os.path.dirname(__file__), "store", ".overlay_state.json")
 
         self.base_window_flags = Qt.FramelessWindowHint | Qt.Window
         self.apply_window_flags()
@@ -35,6 +37,8 @@ class Overlay(QWidget):
         self.setStyleSheet("background: transparent;")
 
         self.resizing = None
+        self.start_pos = None
+        self.start_geom = None
         self.min_width = 200
         self.min_height = 100
         self.resize_handle_size = 14
@@ -50,23 +54,28 @@ class Overlay(QWidget):
         self.last_frame_signature = None
         self.recent_spoken = {}
         self.recent_spoken_ttl_sec = 18.0
+        self.recent_spoken_max_size = 200  # Hard limit to prevent unbounded growth
         self.similarity_skip_threshold = 0.92
         self.running = False
         self.ocr_in_progress = False
         self.state_lock = threading.Lock()
         self.text_processor = OCRTextProcessor()
-        self.tts_worker = TTSWorker(base_rate_wpm=260, rate_multiplier=1.0)
+        # Enable debug mode if W3_DEBUG_TTS_OUTPUT env var is set
+        debug_output = os.getenv("W3_DEBUG_TTS_OUTPUT")
+        if debug_output:
+            logger.warning(f"!!! DEBUG MODE ENABLED - buffering audio to {debug_output}")
+        self.tts_worker = TTSWorker(base_rate_wpm=260, debug_output_file=debug_output)
         self.tts_worker.start()
 
-        # Timer OCR
+        # Timer OCR - constants
         self.timer = QTimer()
         self.timer.setTimerType(Qt.PreciseTimer)
         self.timer.timeout.connect(self.capture_area)
         self.capture_interval_ms = 120
+        self.frame_signature_size = (64, 36)  # Downsampled frame for change detection
 
         self.start_action = None
         self.stop_action = None
-        self.warned_tts_unavailable = False
 
     # ================= DRAW =================
     def paintEvent(self, event):
@@ -257,13 +266,14 @@ class Overlay(QWidget):
             with open(self.window_state_path, "r", encoding="utf-8") as handle:
                 data = json.load(handle)
 
-            x = int(data.get("x"))
-            y = int(data.get("y"))
-            width = max(self.min_width, int(data.get("width")))
-            height = max(self.min_height, int(data.get("height")))
+            # Validate keys exist and are convertible to int
+            x = int(data.get("x", 300))
+            y = int(data.get("y", 200))
+            width = max(self.min_width, int(data.get("width", 600)))
+            height = max(self.min_height, int(data.get("height", 250)))
             self.setGeometry(x, y, width, height)
-        except Exception as err:
-            print(f"Window state restore error: {err}")
+        except (json.JSONDecodeError, ValueError, TypeError) as err:
+            logger.warning(f"Window state restore error: {err}. Using defaults.")
 
     def save_current_geometry(self):
         try:
@@ -276,8 +286,8 @@ class Overlay(QWidget):
             }
             with open(self.window_state_path, "w", encoding="utf-8") as handle:
                 json.dump(payload, handle)
-        except Exception as err:
-            print(f"Window state save error: {err}")
+        except (IOError, OSError, ValueError) as err:
+            logger.warning(f"Failed to save window state: {err}")
 
     def apply_window_flags(self):
         flags = self.base_window_flags | Qt.WindowStaysOnTopHint
@@ -292,52 +302,9 @@ class Overlay(QWidget):
         self.stop_action = stop_action
         self.update_capture_actions()
 
-    def prompt_speed_multiplier(self):
-        current = self.tts_worker.get_rate_multiplier()
-        text, ok = QInputDialog.getText(
-            self,
-            "Speed Multiplier",
-            "Enter speed (for example: 1, 2, 2.5):",
-            text=f"{current:g}",
-        )
-        if not ok:
-            return
-
-        multiplier = self.parse_speed_multiplier(text)
-        if multiplier is None:
-            QMessageBox.warning(
-                self,
-                "Invalid Speed",
-                "Invalid value. Use 1, 2, or 2.5 (must be greater than 0).",
-            )
-            return
-
-        self.tts_worker.set_rate_multiplier(multiplier)
-        print(f"TTS speed set to {multiplier:g}x ({self.tts_worker.get_rate_wpm()} wpm)")
-
-    def parse_speed_multiplier(self, value):
-        raw = value.strip().lower()
-        raw = raw.replace(",", ".")
-        try:
-            multiplier = float(raw)
-        except ValueError:
-            return None
-        if multiplier <= 0:
-            return None
-        return multiplier
-
     # ================= START / STOP =================
     def start_capture(self):
         if self.running:
-            return
-        if not self.tts_worker.use_say_tts:
-            if not self.warned_tts_unavailable:
-                QMessageBox.warning(
-                    self,
-                    "TTS Unavailable",
-                    "macOS 'say' is unavailable in the current environment.",
-                )
-                self.warned_tts_unavailable = True
             return
         self.running = True
         self.last_text = ""
@@ -372,7 +339,6 @@ class Overlay(QWidget):
                 return
             self.ocr_in_progress = True
 
-        worker_started = False
         try:
             geo = self.geometry()
 
@@ -387,24 +353,28 @@ class Overlay(QWidget):
                 img = Image.frombytes("RGB", screenshot.size, screenshot.rgb)
                 self.mask_overlay_artifacts_for_ocr(img)
 
-            signature = img.convert("L").resize((64, 36)).tobytes()
+            signature = img.convert("L").resize(self.frame_signature_size).tobytes()
             if signature == self.last_frame_signature:
                 with self.state_lock:
                     self.ocr_in_progress = False
                 return
             self.last_frame_signature = signature
-            threading.Thread(
-                target=self.process_image,
-                args=(img,),
-                daemon=True,
-            ).start()
-            worker_started = True
-        except Exception as err:
-            print(f"Capture error: {err}")
-        finally:
-            if not worker_started:
+
+            # Start worker thread - if it fails, flag will be reset in process_image finally
+            try:
+                threading.Thread(
+                    target=self.process_image,
+                    args=(img,),
+                    daemon=True,
+                ).start()
+            except Exception as err:
+                logger.error(f"Failed to start OCR thread: {err}")
                 with self.state_lock:
                     self.ocr_in_progress = False
+        except Exception as err:
+            logger.error(f"Capture error: {err}")
+            with self.state_lock:
+                self.ocr_in_progress = False
 
     def mask_overlay_artifacts_for_ocr(self, img):
         # Remove overlay controls and border from OCR input without cropping content.
@@ -435,11 +405,15 @@ class Overlay(QWidget):
             gray = img.convert("L")
             text = pytesseract.image_to_string(
                 gray,
-                lang="vie",
+                lang="vie+eng",
                 config="--oem 1 --psm 6",
             ).strip()
             if not text:
                 return
+
+            # Log raw OCR output before any processing
+            text_preview = text[:80] + "..." if len(text) > 80 else text
+            logger.info(f"[OCR    ] {text_preview}")
 
             normalized_text = self.sanitize_ocr_text(text)
             if not normalized_text:
@@ -490,14 +464,14 @@ class Overlay(QWidget):
                 prepared_text = self.tts_worker.prepare_text(text_to_speak)
                 if not prepared_text:
                     return
-                detected_at = datetime.now().astimezone().isoformat(timespec="milliseconds")
-                print(f"Detected [{detected_at}]: {prepared_text}")
+                text_preview = prepared_text[:70] + "..." if len(prepared_text) > 70 else prepared_text
+                logger.info(f"[SPEAK  ] {text_preview}")
                 self.tts_worker.speak(prepared_text)
                 with self.state_lock:
                     self.last_text = next_last_text
                     self.last_text_cmp = next_last_cmp
         except Exception as err:
-            print(f"OCR error: {err}")
+            logger.error(f"OCR error: {err}")
         finally:
             with self.state_lock:
                 self.ocr_in_progress = False
@@ -513,9 +487,20 @@ class Overlay(QWidget):
 
     def prune_recent_spoken_locked(self):
         now = time.monotonic()
+        # First, remove entries exceeding TTL
         expired = [
             key for key, seen_at in self.recent_spoken.items()
             if now - seen_at > self.recent_spoken_ttl_sec
         ]
         for key in expired:
             del self.recent_spoken[key]
+
+        # If dict still exceeds max size, prune oldest entries
+        if len(self.recent_spoken) > self.recent_spoken_max_size:
+            overage = len(self.recent_spoken) - self.recent_spoken_max_size
+            oldest_keys = sorted(
+                self.recent_spoken.items(),
+                key=lambda x: x[1]
+            )[:overage]
+            for key, _ in oldest_keys:
+                del self.recent_spoken[key]
