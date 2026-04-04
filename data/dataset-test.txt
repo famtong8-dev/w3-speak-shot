@@ -1,0 +1,223 @@
+mừng bạn đã tiến xa đến mức này trong khóa học này.
+Thật đáng kinh ngạc.
+Chúng ta hãy thực hiện một điểm kiểm tra trạng thái học tập để xem
+chúng ta đã đi được bao xa trên hành trình học tập của mình.
+Và để làm điều này, chúng ta sẽ xem trang
+web chứng nhận của chúng tôi để xem hướng dẫn bài kiểm tra, v.v.
+Vì vậy, tôi 6 đây trên trang chứng nhận này.
+Và tại đây, chúng ta có tùy chọn đặt lịch thi hoặc khám
+phá quá trình luyện thi.
+Tuy nhiên, chúng tôi đã xem xét kỳ thi
+Nhà phát triển được chứng nhận - Hội viên và nó cung
+cấp cho bạn một số thông tin về ai nên tham
+gia kỳ thi này.
+Vì vậy, hy vọng bạn cảm thấy lo lắng về điều
+này, nhưng nếu bạn đã làm được
+đến mức này thì phần lớn là do bạn thực sự muốn có chứng nhận đó.
+Vì vậy, phần tổng quan của bài thi sẽ có 65 câu
+hỏi, có thể là trắc nghiệm hoặc trắc nghiệm.
+Đây là chỉ phí.
+Đôi khi bạn có một số ưu đãi, chẳng
+hạn như 6 đây bạn có cơ hội thi lại miễn phí nếu
+Vì vậy, hãy xem những loại ưu đãi này trên trang này.
+Nhưng quan trọng nhất những gì bạn
+cần xem là hướng dẫn làm bài và các câu hỏi mẫu.
+Vì vậy các câu hỏi mẫu các bạn có thể tự luyện tập.
+Nó cung cấp cho bạn các câu hỏi mẫu.
+Và ð phần dưới cùng, bạn cũng có thể xem các câu trả lời và lý
+do tại sao chúng đúng hoặc không đúng.
+Vì vậy, đây là thời điểm tốt để kiểm tra kiến thức của bạn.
+Và bạn cũng có thêm câu hỏi thực hành
+nếu cần trực tiếp trên AWS.
+Vi vay, 6 đây bộ câu hỏi thực hành chính thức là miễn phí và chỉ cần n...
+vào đây và bạn sẽ truy cập một trang web.
+khác và bạn sẽ sẵn sàng.
+Nhưng điều quan trọng
+bạn cần xem qua là hướng dẫn làm bài thi.
+Vì vậy, hướng dẫn thi sẽ cho bạn biết
+mục đích của kỳ thi là gì và bạn là ai.
+Vì vậy, bài kiểm tra sẽ xác thực khả năng
+thể hiện trình độ thành thạo của bạn trong việc phát
+triển, thử nghiệm, triển khai và gỡ lỗi ứng dụng trên AWS.
+Vì vậy, bạn phải có một hoặc nhiều năm kinh nghiệm thực hành.
+Nhưng nếu bạn đã thực hành khóa học này
+và làm theo thì bạn có thể bắt đầu.
+Chắc chắn là tốt nếu bạn có một số kiến
+thức chung về CNTT, mặc dù tôi đã giải
+thích mọi thứ bạn cần biết trong khóa học
+này nhưng đừng lo lắng.
+Và để biết kiến thức AWS được đề xuất, bạn có thể kiểm
+tra kiến thức của mình tại đây.
+Nhưng tất nhiên, khóa học này thực sự dạy bạn
+cách làm mọi việc, được chứ?
+Thật tuyệt vì nó cho bạn biết điều gì nằm ngoài
+phạm vi, điều gì bạn không nên biết.
+Nhưng đây là một số chỉ tiết.
+Bây gid nội dung bài thi quan trọng hơn.
+Vì vậy, bạn có câu hỏi trắc nghiệm.
+Vì vậy, điều đó có nghĩa là bạn có một
+câu trả lời đúng và ba câu trả lời sai, chúng được gọi là câu trả lời ...
+phân tâm hoặc nhiều câu trả lời trong
+đó bạn có hai câu trả lời đúng trở lên trong
+số năm tùy chọn phản hồi trở lên.
+Nhưng sau đó nó sẽ cho bạn biết có bao nhiêu là đúng.
+Vì vậy, hãy chọn ba hoặc chọn hai, v.v.
+Và nếu bạn trả lời câu hỏi của mình và
+trả lời sai, điều đó không làm bạn bị mất điểm.
+Vì vậy hãy trả lời từng câu hỏi một nhé, dù không
+biết bạn cũng có thể đoán được
+và biết đâu bạn sẽ gặp may mắn.
+Vì vậy, có BO câu hỏi ảnh hưởng đến điểm số của bạn nhưng bạn
+không biết đó là câu hỏi nao.
+Và 15 câu hỏi không tính điểm sẽ không ảnh hường đến điểm của bạn.
+Và hầu hết đều là những câu hỏi mà AWS đang kiểm tra để biết liệu họ c...
+chúng vào các bản sửa đồi bài kiểm tra
+trong tương lai hay không.
+Nhưng bạn không biết cái nào được
+xếp loại và cái nào không.
+Vì vậy, kết quả bài thi nằm trong thang điểm
+từ 100 đến 1.000 và điểm đậu là 720.
+Bạn không biết chính xác mình được
+chấm điểm như thế nào, chỉ cần biết liệu bạn đạt hay trượt
+ð một số hạng mục dé cung cấp cho bạn gợi ý về lĩnh vực thành thạo của...
+Bây giờ là phần phác thảo nội dung, vậy là bạn có bốn miền.
+Bạn có miền một, hai và ba xung quanh việc phát
+triển với các dịch vụ AWS, tức là 32%.
+Bao mật, 26%, triển khai, 24%, sau đó khắc
+phục sự cố và tối ưu hóa, 18%.
+Vì vay, 6 đây, bạn sẽ có được một số thông tin chỉ tiết rất sâu sắc
+về những gì bạn nên có cho mỗi miền.
+Vì vậy, hãy phát triển với các dịch vụ AWS,
+tập hợp các nhiệm vụ bạn nên biết
+và các kỹ năng bạn nên có, v.v.
+Một lần nữa, khóa học này đề cập đến mọi
+thứ bạn cần cho kỳ thi.
+Tôi thu thập phản hồi liên tục.
+Và nếu có một câu hỏi
+có thể không có trong khóa học, bạn có thể đoán
+được câu trả lời đúng là gì.
+Và nếu bạn không thể, xin vui lòng cho tôi biết.
+Và tất nhiên sau đó tôi sẽ cập nhật
+khóa học để bổ sung kiến thức này.
+Nhưng lễ ra bạn nên bao quát mọi thứ.
+Vì vậy, hãy xem qua hướng dẫn này vì
+nó cho bạn biết một số tuyên bố về nhiệm vụ
+và kiến thức về những gì bạn cần làm và các kỹ năng.
+Nhưng điều này chắc chắn rộng hơn
+những gì bạn nên biết, được chứ?
+Những gì tôi cảm thấy là quan trọng đã được dạy trong khóa học.
+Vì vậy, đừng lo lắng về nó.
+Và sau đó nếu bạn cuộn xuống
+hết, bạn sẽ thấy một số thông tin xung quanh các
+loại công nghệ và khái niệm có thể
+xuất hiện trong bài kiểm tra.
+Nó cho bạn biết các dịch vụ trong phạm vi, có
+nghĩa là các dịch vụ có thể xuất hiện trong kỳ thi
+và chúng đã được đề cập chỉ tiết trong khóa học.
+Không quá thấp đối với một số người, nhưng đủ cho quan điểm thi.
+Và nếu bạn thấy thứ gì đó ð đây nhưng
+không có trong khóa học thì đó là điều có
+chủ ý, đó là vì chúng ta chưa thấy nó trong kỳ thi.
+Bạn cũng nhận được các dịch vụ và tính năng ngoài phạm vi của AWS,
+những tính năng này ð đây để
+mm eảẶằœáứ@œ
+cho bạn biết những chủ đề nào không có trong bài kiểm tra, được chứ?
+Vì vậy, điều này rất hữu ích, hãy đọc qua nhưng chắc
+chắn đừng nhấn mạnh nó.
+Tôi nghĩ rằng mức độ sẵn sàng của bạn chủ yếu dựa vào các
+câu hỏi mẫu, bài thi thực hành, bài thi
+thực hành trong khóa học này và trong các
+khóa học khác của tôi để biết thêm các câu hỏi thi thực hành.
+Nhưng ít nhất chúng ta đã thấy hướng dẫn làm bài thi là gì, thực tế
+là khóa học bao gồm hầu hết các hướng
+dẫn làm bài thi, v.v.
+À chính nó đấy.
+Tôi sẽ cho bạn lời khuyên trong bài giảng tiếp theo.
+Nhưng cảm ơn bạn rất nhiều vì đã xem cái này.
+Tôi sẽ gặp bạn trong bài giảng tiếp theo.
+mm eảẶằœáứ@œ
+Người dẫn chuyện: Vì vậy, đây là lời khuyên
+của tôi và hai xu của tôi dé vượt qua kỳ thi, vì vậy đó chỉ là lồi khu...
+Có lẽ một số điều này là
+hiển nhiên, một số thì bạn chỉ cần nghe một lần.
+Đối với tôi, mẹo số một là thực hành làm cho hoàn hảo.
+Vì vậy, nếu bạn là người mới sử dụng AWS,
+bạn sẽ phải thực hành rất nhiều để hiều cách làm việc với AWS hàng ngà...
+Nếu bạn là người mới sử dụng AWS, khóa học này
+có thé mang đến cho bạn sự khởi đầu thuận lợi trong việc sử dung AWS.
+Tự tin thì làm bài,
+còn không thì đừng vội, còn thời gian.
+Chỉ cần làm việc trên AWS, hãy tự tin.
+Sử dụng các cuộn IAM, triển khai ứng dụng va
+sau đó khi bạn đã sẵn sàng, bạn có thề làm bài kiểm tra.
+Kỳ thi đề xuất bạn
+sẽ có một hoặc nhiều năm kinh nghiệm thực hành.
+Vì vậy, có những điều bạn không thể giả mạo, vì
+vậy tùy thuộc vào bạn để xem liệu bạn đã sẵn sàng đề
+vượt qua kỳ thi hay chưa.
+Vì vậy, những gì tôi nói là thực hành làm cho hoàn hao!
+Và, bạn có thể có cảm giác
+ngay bây gið là choáng ngợp bởi lượng
+kiến thức tôi vừa truyền cho bạn, mà bạn vừa học được.
+Vì vậy, cần có thời gian để có kiến thức, đây không
+phải là kiểu bạn làm trong ba ngày.
+Đây là loại khóa học kéo dài hàng tuần.
+Và, vì vậy nếu bạn đã có nhiều kiến thức đã học nhưng trong đầu bạn
+vẫn chưa nghĩ rằng nó hoàn hảo, thì hãy
+bắt đầu thực hành và thực hiện khóa học thêm một lần nữa.
+Rõ ràng là một vài giờ, nhưng nó thực
+sự sẽ giúp bạn không lãng phí chi phí ôn thi sau đó.
+Vì vậy, thực sự chỉ cần thực hành.
+Đó là lời khuyên của tôi.
+Vì vậy, nếu bạn muốn thực hành, bạn có thé như thế
+nào, tôi phải làm thế nào đây?
+Vâng, nếu bạn đang 6 trong một công ty, thì tốt, hãy làm việc
+với công ty của bạn.
+Nếu không, hãy lấy một trong các ứng dụng hiện có của bạn bằng bất
+kỳ ngôn ngữ nào bạn muốn.
+Cố gắng triển khai thủ công trong EC2.
+Đó là một bước đầu tiên tốt.
+Sau đó, hãy thử triển khai nó trên Elastic Beanstalk
+và mở rộng quy mô với một trình giảm giá nhỏ
+và một nhóm mở rộng quy mô.
+Có thể tạo một đường ống dẫn CICD cho nó.
+Vì vậy, bạn đi tất cả các con đường
+tu mã của bạn đến tao tác của bạn dé triển khai.
+Có lẽ bạn có thể thử chia nhỏ
+ứng dụng của mình thành một số thành phần và sử
+dụng SOS và SNS để tách toàn bộ ứng dụng của ban.
+Nếu có thể, nếu bạn sử dụng java, go python, node, những loại ngôn ngữ...
+thì bạn có thể chạy nó với AWS Lambda
+và những người bạn của nó.
+Vi vậy, nó là bạn của DynamoDB, cổng API.
+Vì vậy, có thể liên quan đến một chút cấu trúc lại, nhưng
+nó có thể rất thú vị.
+Và, nếu bạn muốn thực hành với CLI và SDK, tôi thực
+sự khuyên bạn nên có những ý tưởng như thế này.
+Vì vậy, ví dụ: tạo một tập lệnh hoặc tạo tập lệnh CLI hoặc SDK sẽ đóng...
+EC2 của bạn vào ban đêm và khởi động
+chúng vào buổi sáng.
+Đó thực sự là một dự án thú vị đề bạn tự làm.
+Hoặc, bạn có thé có một cái tu động chụp nhanh
+các tập EBS của bạn vào
+ban đêm, vì vậy bạn biết chúng luôn được sao lưu mỗi ngày một lần.
+Và, có thể một ý tưởng thứ ba là
+liệt kê các trường hợp EC2 chưa được sử dụng hết trong một khu vực.
+sử dụng chúng dưới mức 10% trong Sử dụng CPU,
+để bạn không lãng phí
+tiền vào các phiên bản EC2 chưa được sử dụng đầy đủ.
+Một lần nữa, chỉ là một loạt các ý tưởng, bạn có thể có ý tưởng của ri...
+mình, dựa trên các trường hợp đã
+sử dụng của bạn hoặc những gì bạn làm hàng ngày.
+Nhưng, những gì tôi muốn làm là
+chỉ dẫn cho bạn thực hành.
+Bây giờ, đối với kỳ thi, bạn sẽ có các câu
+hỏi và bạn sẽ có nhiều
+câu trả lời, đôi khi một câu trả lời, đôi khi nhiều hơn một câu trả lờ...
+Hầu hết những câu hỏi này sẽ dựa trên kịch bản.
+Và, đối với tất cả các câu hỏi, tôi khuyên bạn
+nên bắt đầu bằng cách loại trừ
+những câu trả lời mà bạn biết chắc là sai.
+Vì vậy, đó là một cách thực sự tốt dé bắt đầu, bời
+vì nếu bạn biết điều gì đó không
+ổn, thì bạn loại bỏ nó, và đó là một câu hỏi ít

@@ -3,122 +3,165 @@
 Desktop app (PyQt5) that:
 - captures a selected screen region in real time,
 - runs Vietnamese OCR with `tesseract`,
-- speaks detected text with macOS `say`,
-- auto-detects mixed English/Vietnamese phrases and switches voice per segment.
+- speaks detected text with VieNeu-TTS (Turbo model — bilingual EN/VI, runs on CPU).
 
 ## System Requirements
 
-- macOS (current TTS backend uses `say`).
-- Python 3.10+.
-- Tesseract + Vietnamese language data.
+- Python 3.10+
+- [uv](https://docs.astral.sh/uv/)
+- Tesseract + Vietnamese language data
 
 ```sh
-brew install tesseract
-brew install tesseract-lang
+# macOS
+brew install tesseract tesseract-lang
+
+# Linux (Ubuntu/Debian)
+sudo apt-get install tesseract-ocr tesseract-ocr-vie
+
+# Windows
+# Download from https://github.com/UB-Mannheim/tesseract/wiki
 ```
 
 ## Installation
 
 ```sh
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
+# Install uv (if not already installed)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Clone the repo
+git clone <repo-url>
+cd w3-speak-shot
+
+# Create virtual environment and install dependencies
+uv venv
+uv pip install -r requirements.txt
 ```
-
-To enable local language detection with fastText (recommended), make sure the model exists:
-
-```sh
-mkdir -p models
-curl -L -o models/lid.176.ftz https://dl.fbaipublicfiles.com/fasttext/supervised-models/lid.176.ftz
-```
-
-`TTSWorker` searches model paths in this order:
-- `W3_TTS_FASTTEXT_MODEL`
-- `app/models/lid.176.ftz`
-- `app/models/lid.176.bin`
-- `models/lid.176.ftz`
-- `models/lid.176.bin`
 
 ## Run
 
 ```sh
+# Activate venv then run
+source .venv/bin/activate
 python app
-```
 
-Or:
-
-```sh
-python -m app
+# Or run directly with uv (no manual activation needed)
+uv run python app
 ```
 
 ## Quick Usage
 
-- Move the frame using the top-left square handle.
-- Resize using the top-right square handle.
-- Bottom-left green square shows capture/running status.
-- Bottom-right `X` square closes the app.
+- Move the frame using the **top-left square** handle.
+- Resize using the **top-right square** handle.
+- **Bottom-left green square** shows capture/running status.
+- **Bottom-right `X`** square closes the app.
 - Use the `Options` menu:
-  - `Start`
-  - `Stop`
-  - `Set Speed...`
+  - `Start` — begin screen capture and OCR
+  - `Stop` — stop capture
+  - `Speed` — adjust TTS playback speed (0.75x – 2x)
+  - `Auto Speed` — when enabled, automatically increases speed by +0.25x when the TTS queue has 2 or more pending items (default: off)
   - `Close App`
 
-The app persists last window position/size in `app/.overlay_state.json`.
+The app persists last window position/size in `app/store/.overlay_state.json`.
 
-## Workflow
+## Environment Variables
+
+Copy `.env.example` to `.env` and adjust as needed — it is loaded automatically at startup:
+
+```sh
+cp .env.example .env
+```
+
+| Variable              | Default | Description                                                          |
+| --------------------- | ------- | -------------------------------------------------------------------- |
+| `W3_TTS_SPEED_FACTOR` | `1.5`   | Base audio speed-up factor (e.g. `1.0` = normal, `2.0` = 2x faster) |
+| `W3_DEBUG_TTS_OUTPUT` | —       | Path to save TTS audio as WAV instead of playing                     |
+| `W3_KEEP_TEMP_AUDIO`  | `false` | Keep temp WAV files after playback                                   |
+| `W3_TEMP_AUDIO_DIR`   | sys tmp | Directory for temp WAV files                                         |
+
+Variables set in the shell take precedence over `.env`.
+
+## How It Works
 
 ```mermaid
 flowchart TD
     A[Overlay Frame] --> B[Capture Area with mss]
-    B --> C[Preprocess Image]
-    C --> D[OCR with Tesseract - vie]
-    D --> E[OCRTextProcessor sanitize/noise filter]
-    E --> F{Meaningful New Text?}
-    F -- No --> B
-    F -- Yes --> G[TTSWorker prepare_text]
-    G --> H[TTSSegmenter EN/VI segmentation]
-    H --> I[macOS say playback by segment/markup]
-    I --> B
+    B --> C[Mask Overlay UI Artifacts]
+    C --> D[Frame Signature Check]
+    D -- No Change --> B
+    D -- Changed --> E[OCR with Tesseract - vie]
+    E --> F[OCRTextProcessor Sanitize Text]
+    F --> G{Meaningful New Text?}
+    G -- No --> B
+    G -- Yes --> H[TTSWorker prepare_text]
+    H --> I{Skip?}
+    I -- contains œ --> B
+    I -- No --> J[Infer Audio with VieNeu Turbo<br/>Cache Result LRU]
+    J --> K{Audio too long?}
+    K -- Yes, likely stuck --> B
+    K -- No --> L[Queue for Playback]
+    L --> M[Play Audio via temp WAV file]
+    M --> B
 ```
+
+## Skip Conditions
+
+The TTS worker silently skips a segment and logs `[SKIP   ]` when:
+
+- The text contains `œ` — indicates garbled/corrupt OCR output.
+- The generated audio duration exceeds `max(5.0, len(text) * 0.15)` seconds — indicates the model entered a stuck/looping state.
 
 ## Source Structure
 
-- `app/__main__.py`: app entrypoint and native menu setup.
-- `app/overlay.py`: overlay UI, capture loop, OCR orchestration.
-- `app/overlay_text.py`: OCR text normalization, sanitization, noise filtering.
-- `app/tts_worker.py`: TTS runtime worker, queue, playback control.
-- `app/tts_segmenter.py`: EN/VI detection and segmentation (fastText + rules).
-- `app/app_icon.py`: application icon.
+```
+app/
+├── __main__.py       Entry point, PyQt5 app + native menu setup
+├── overlay.py        Overlay UI, capture loop, frame change detection, OCR orchestration
+├── overlay_text.py   OCR text processor — sanitization, noise filtering, similarity comparison
+├── tts_worker.py     TTS worker thread — VieNeu inference, LRU audio cache, playback, speed control
+└── store/
+    ├── logo.icns             App icon (macOS)
+    ├── logo.ico              App icon (Windows)
+    └── .overlay_state.json   Persisted window position/size
+```
 
-## Main Environment Variables
+## TTS Engine
 
-- `W3_TTS_SAY_VOICE` (default: `Linh`): Vietnamese voice.
-- `W3_TTS_SAY_EN_VOICE` (default: auto fallback): English voice.
-- `W3_TTS_MULTI_VOICE_MODE` (default: `segment`): `segment` or `markup`.
-- `W3_TTS_SPELL_ACRONYMS` (default: `1`): spell acronyms (`SDK`, `KMS`, ...).
-- `W3_TTS_DETECT_EN_WORDS` (default: `1`): enable English phrase detection (fastText + rules).
-- `W3_TTS_DEBUG_LANG` (default: `0`): print language-detection debug logs.
-- `W3_TTS_FASTTEXT_MODEL`: custom path to fastText model.
-- `W3_TTS_FASTTEXT_EN_THRESHOLD` (default: `0.80`): EN confidence threshold.
-- `W3_TTS_FASTTEXT_MARGIN_THRESHOLD` (default: `0.12`): confidence margin.
-- `W3_TTS_FASTTEXT_MIN_PHRASE_WORDS` (default: `2`): min words per phrase window.
-- `W3_TTS_FASTTEXT_MAX_PHRASE_WORDS` (default: `4`): max words per phrase window.
+Uses **VieNeu-TTS Turbo** (`TurboVieNeuTTS`) — GGUF/ONNX format, runs on CPU with a LLaMA backbone.
 
-Example:
+- Sample rate: 24 000 Hz
+- Max context: 4 096 tokens
+- Supports bilingual text (English + Vietnamese) without pre-segmentation
+
+## Testing
+
+Generate WAV files from `data/dataset-test.txt` to verify TTS output:
 
 ```sh
-W3_TTS_DEBUG_LANG=1 W3_TTS_SAY_EN_VOICE=Samantha python app
+# Test a single sentence
+W3_TTS_SPEED_FACTOR=1.5 uv run test_dataset.py --text "your sentence here"
+
+# Generate one WAV per line → test/001_....wav
+W3_TTS_SPEED_FACTOR=1.5 uv run test_dataset.py
+
+# Merge all lines into a single file → test/merged.wav + test/merged_index.txt
+W3_TTS_SPEED_FACTOR=1.5 uv run test_dataset.py --merge
 ```
+
+`merged_index.txt` contains per-segment timestamps for easy audio inspection.
 
 ## Troubleshooting
 
-- `Voice '...' not found`
-  - Check available voices: `say -v ?`
-  - Set `W3_TTS_SAY_VOICE` / `W3_TTS_SAY_EN_VOICE` to valid values.
+**`TTS initialization error`**
+```sh
+uv pip install vieneu
+```
 
-- `TTS language detector: fastText unavailable`
-  - Ensure `fasttext-wheel` and `numpy<2` are installed (`requirements.txt`).
-  - Verify `lid.176.ftz` exists in one of the supported paths.
+**No audio output (Linux)**
+```sh
+# Ensure paplay is available (used for playback)
+sudo apt-get install pulseaudio-utils
+```
 
-- OCR returns noisy text
-  - Verify capture region quality, on-screen font clarity, and `tesseract-lang` installation.
+**OCR returns noisy text**
+- Verify capture region quality and on-screen font clarity.
+- Ensure `tesseract-lang` (Vietnamese data) is installed.
