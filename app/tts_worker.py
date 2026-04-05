@@ -267,10 +267,6 @@ class TTSWorker(threading.Thread):
             except queue.Empty:
                 break
 
-        # Audio playback is via subprocess (temp files), no explicit stop needed
-
-        with self.runtime_lock:
-            self.current_proc = None
 
     def save_debug_audio(self):
         """Save buffered audio to WAV file. Call this at the end of session."""

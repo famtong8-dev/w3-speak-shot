@@ -69,7 +69,8 @@ uv run python app
 
 - `Start` / `Stop` — begin or stop screen capture and OCR
 - `Speed` — adjust TTS playback speed (0.75x – 2x)
-- `Auto Speed` — automatically increases speed by +0.25x when queue ≥ 2 (default: off). Only affects newly queued items, not items already pre-rendered in queue.
+- `Auto Speed` — automatically increases speed by +0.25x (max 3.0x) when queue ≥ 2 (default: off). Only affects newly queued items, not items already pre-rendered in queue.
+- `Pre-render Audio` — infer + resample audio in background while previous sentence plays, eliminating the gap between sentences (default: on). When off, resample happens at play time — speed changes apply immediately to the next sentence.
 - `Close App`
 
 The app persists last window position/size in `app/store/.overlay_state.json`.
