@@ -241,6 +241,15 @@ class TTSWorker(threading.Thread):
         with self.config_lock:
             return max(120, int(self.base_rate_wpm * self.rate_multiplier))
 
+    def skip_to_latest(self, text):
+        """Drain the queue and speak the latest text after current audio finishes."""
+        while True:
+            try:
+                self.text_queue.get_nowait()
+            except queue.Empty:
+                break
+        self.speak(text)
+
     def stop_speaking(self):
         self.stop_requested.set()
         while True:

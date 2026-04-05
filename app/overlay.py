@@ -46,6 +46,7 @@ class Overlay(QWidget):
         self.status_indicator_size = 14
         self.close_button_size = 14
         self.toggle_button_size = 14
+        self.skip_button_size = 14
         self.speed_button_size = 14
         self.setMouseTracking(True)
         self.restore_last_geometry()
@@ -53,6 +54,7 @@ class Overlay(QWidget):
         # TTS
         self.last_text = ""
         self.last_text_cmp = ""
+        self.latest_text = ""
         self.last_frame_signature = None
         self.recent_spoken = {}
         self.recent_spoken_ttl_sec = 18.0
@@ -76,6 +78,11 @@ class Overlay(QWidget):
         self.capture_interval_ms = 120
         self.frame_signature_size = (64, 36)  # Downsampled frame for change detection
 
+        # Timer to refresh queue display
+        self.ui_refresh_timer = QTimer()
+        self.ui_refresh_timer.timeout.connect(self.update)
+        self.ui_refresh_timer.start(300)
+
         self.start_action = None
         self.stop_action = None
         self._speed_actions = []
@@ -96,6 +103,8 @@ class Overlay(QWidget):
         status_indicator = self.status_indicator_rect()
         close_button = self.close_button_rect()
         toggle_button = self.toggle_button_rect()
+        skip_button = self.skip_button_rect()
+        queue_display = self.queue_display_rect()
         speed_up_button = self.speed_up_button_rect()
         speed_down_button = self.speed_down_button_rect()
         speed_display = self.speed_display_rect()
@@ -108,6 +117,8 @@ class Overlay(QWidget):
             painter.fillRect(status_indicator, QColor(170, 170, 170, 180))
         painter.fillRect(close_button, QColor(255, 255, 255, 210))
         painter.fillRect(toggle_button, QColor(255, 255, 255, 210))
+        painter.fillRect(skip_button, QColor(255, 255, 255, 210))
+        painter.fillRect(queue_display, QColor(255, 255, 255, 210))
         painter.fillRect(speed_up_button, QColor(255, 255, 255, 210))
         painter.fillRect(speed_down_button, QColor(255, 255, 255, 210))
         painter.fillRect(speed_display, QColor(255, 255, 255, 210))
@@ -117,6 +128,8 @@ class Overlay(QWidget):
         painter.drawRect(status_indicator)
         painter.drawRect(close_button)
         painter.drawRect(toggle_button)
+        painter.drawRect(skip_button)
+        painter.drawRect(queue_display)
         painter.drawRect(speed_up_button)
         painter.drawRect(speed_down_button)
         painter.drawRect(speed_display)
@@ -124,6 +137,8 @@ class Overlay(QWidget):
         self.draw_resize_icon(painter, resize_handle)
         self.draw_close_icon(painter, close_button)
         self.draw_toggle_icon(painter, toggle_button)
+        self.draw_skip_icon(painter, skip_button)
+        self.draw_queue_display(painter, queue_display)
         self.draw_plus_icon(painter, speed_up_button)
         self.draw_minus_icon(painter, speed_down_button)
         self.draw_speed_display(painter, speed_display)
@@ -213,6 +228,19 @@ class Overlay(QWidget):
             painter.drawPolygon(triangle)
             painter.setBrush(Qt.NoBrush)
 
+    def draw_queue_display(self, painter, rect):
+        count = self.tts_worker.text_queue.qsize()
+        font = QFont("Arial", 6, QFont.Bold)
+        painter.setFont(font)
+        painter.setPen(QPen(QColor(200, 0, 0), 1))
+        painter.drawText(rect, Qt.AlignCenter, str(count))
+
+    def draw_skip_icon(self, painter, rect):
+        font = QFont("Arial", 6, QFont.Bold)
+        painter.setFont(font)
+        painter.setPen(QPen(QColor(200, 0, 0), 1))
+        painter.drawText(rect, Qt.AlignCenter, ">>")
+
     def draw_plus_icon(self, painter, rect):
         icon_pen = QPen(QColor(200, 0, 0), 2)
         icon_pen.setCapStyle(Qt.RoundCap)
@@ -278,6 +306,26 @@ class Overlay(QWidget):
             self.toggle_button_size,
         )
 
+    def skip_button_rect(self):
+        gap = 4
+        toggle = self.toggle_button_rect()
+        return QRect(
+            toggle.left(),
+            toggle.top() - self.skip_button_size - gap,
+            self.skip_button_size,
+            self.skip_button_size,
+        )
+
+    def queue_display_rect(self):
+        gap = 4
+        skip = self.skip_button_rect()
+        return QRect(
+            skip.left(),
+            skip.top() - self.skip_button_size - gap,
+            self.skip_button_size,
+            self.skip_button_size,
+        )
+
     def close_button_rect(self):
         padding = 6
         return QRect(
@@ -331,6 +379,10 @@ class Overlay(QWidget):
             else:
                 self.start_capture()
             return
+        if self.skip_button_rect().contains(event.pos()):
+            if self.latest_text:
+                self.tts_worker.skip_to_latest(self.latest_text)
+            return
         if self.speed_up_button_rect().contains(event.pos()):
             values = getattr(self, "_speed_values", [])
             current = self.tts_worker.base_rate_multiplier
@@ -356,6 +408,7 @@ class Overlay(QWidget):
         # Cursor change
         if any(r.contains(event.pos()) for r in [
             self.close_button_rect(), self.toggle_button_rect(),
+            self.skip_button_rect(),
             self.speed_up_button_rect(), self.speed_down_button_rect(),
         ]):
             self.setCursor(QCursor(Qt.PointingHandCursor))
@@ -544,6 +597,8 @@ class Overlay(QWidget):
             self.status_indicator_rect(),
             self.close_button_rect(),
             self.toggle_button_rect(),
+            self.skip_button_rect(),
+            self.queue_display_rect(),
             self.speed_up_button_rect(),
             self.speed_down_button_rect(),
             self.speed_display_rect(),
@@ -621,6 +676,7 @@ class Overlay(QWidget):
                     return
                 text_preview = prepared_text[:70] + "..." if len(prepared_text) > 70 else prepared_text
                 logger.info(f"[SPEAK  ] {text_preview}")
+                self.latest_text = prepared_text
                 self.tts_worker.speak(prepared_text)
                 with self.state_lock:
                     self.last_text = next_last_text
