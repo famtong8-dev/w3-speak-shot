@@ -10,7 +10,7 @@ import mss
 import pytesseract
 from PIL import Image, ImageDraw
 from PyQt5.QtCore import Qt, QTimer, QRect, QPointF
-from PyQt5.QtGui import QPainter, QPen, QColor, QCursor
+from PyQt5.QtGui import QPainter, QPen, QColor, QCursor, QFont, QPolygon
 from PyQt5.QtWidgets import QWidget
 
 logger = logging.getLogger(__name__)
@@ -78,6 +78,8 @@ class Overlay(QWidget):
 
         self.start_action = None
         self.stop_action = None
+        self._speed_actions = []
+        self._speed_values = []
 
     # ================= DRAW =================
     def paintEvent(self, event):
@@ -96,6 +98,7 @@ class Overlay(QWidget):
         toggle_button = self.toggle_button_rect()
         speed_up_button = self.speed_up_button_rect()
         speed_down_button = self.speed_down_button_rect()
+        speed_display = self.speed_display_rect()
 
         painter.fillRect(move_handle, QColor(255, 255, 255, 210))
         painter.fillRect(resize_handle, QColor(255, 255, 255, 210))
@@ -107,6 +110,7 @@ class Overlay(QWidget):
         painter.fillRect(toggle_button, QColor(255, 255, 255, 210))
         painter.fillRect(speed_up_button, QColor(255, 255, 255, 210))
         painter.fillRect(speed_down_button, QColor(255, 255, 255, 210))
+        painter.fillRect(speed_display, QColor(255, 255, 255, 210))
         painter.setPen(QPen(QColor(255, 0, 0), 2))
         painter.drawRect(move_handle)
         painter.drawRect(resize_handle)
@@ -115,12 +119,14 @@ class Overlay(QWidget):
         painter.drawRect(toggle_button)
         painter.drawRect(speed_up_button)
         painter.drawRect(speed_down_button)
+        painter.drawRect(speed_display)
         self.draw_move_icon(painter, move_handle)
         self.draw_resize_icon(painter, resize_handle)
         self.draw_close_icon(painter, close_button)
         self.draw_toggle_icon(painter, toggle_button)
         self.draw_plus_icon(painter, speed_up_button)
         self.draw_minus_icon(painter, speed_down_button)
+        self.draw_speed_display(painter, speed_display)
 
     def draw_move_icon(self, painter, rect):
         cx = rect.x() + (rect.width() / 2.0)
@@ -198,7 +204,6 @@ class Overlay(QWidget):
             cy_mid = rect.top() + rect.height() // 2
             tip = rect.right() - 3
             painter.setBrush(QColor(200, 0, 0))
-            from PyQt5.QtGui import QPolygon
             from PyQt5.QtCore import QPoint
             triangle = QPolygon([
                 QPoint(cx, rect.top() + 3),
@@ -226,6 +231,14 @@ class Overlay(QWidget):
         cy = rect.top() + rect.height() // 2
         arm = 3
         painter.drawLine(cx - arm, cy, cx + arm, cy)
+
+    def draw_speed_display(self, painter, rect):
+        speed = self.tts_worker.get_rate_multiplier()
+        label = f"{speed:.2f}".rstrip("0").rstrip(".")
+        font = QFont("Arial", 6, QFont.Bold)
+        painter.setFont(font)
+        painter.setPen(QPen(QColor(200, 0, 0), 1))
+        painter.drawText(rect, Qt.AlignCenter, label)
 
     def move_handle_rect(self):
         padding = 6
@@ -294,6 +307,16 @@ class Overlay(QWidget):
             self.speed_button_size,
         )
 
+    def speed_display_rect(self):
+        gap = 4
+        down = self.speed_down_button_rect()
+        return QRect(
+            down.left(),
+            down.top() - self.speed_button_size - gap,
+            self.speed_button_size,
+            self.speed_button_size,
+        )
+
     # ================= MOUSE EVENTS =================
     def mousePressEvent(self, event):
         self.start_pos = event.globalPos()
@@ -309,14 +332,18 @@ class Overlay(QWidget):
                 self.start_capture()
             return
         if self.speed_up_button_rect().contains(event.pos()):
-            new_rate = round(min(self.tts_worker.base_rate_multiplier + 0.25, 3.0), 2)
-            self.tts_worker.set_base_rate_multiplier(new_rate)
-            logger.info(f"[SPEED  ] {new_rate}x")
+            values = getattr(self, "_speed_values", [])
+            current = self.tts_worker.base_rate_multiplier
+            candidates = [v for v in values if v > current]
+            if candidates:
+                self._set_speed(min(candidates))
             return
         if self.speed_down_button_rect().contains(event.pos()):
-            new_rate = round(max(self.tts_worker.base_rate_multiplier - 0.25, 0.5), 2)
-            self.tts_worker.set_base_rate_multiplier(new_rate)
-            logger.info(f"[SPEED  ] {new_rate}x")
+            values = getattr(self, "_speed_values", [])
+            current = self.tts_worker.base_rate_multiplier
+            candidates = [v for v in values if v < current]
+            if candidates:
+                self._set_speed(max(candidates))
             return
         if self.move_handle_rect().contains(event.pos()):
             self.resizing = "move_handle"
@@ -413,6 +440,19 @@ class Overlay(QWidget):
         self.stop_action = stop_action
         self.update_capture_actions()
 
+    def bind_speed_actions(self, speed_actions):
+        """speed_actions: list of (value, QAction) from the Options > Speed menu."""
+        self._speed_actions = speed_actions
+        self._speed_values = [v for v, _ in speed_actions]
+
+    def _set_speed(self, new_rate):
+        self.tts_worker.set_base_rate_multiplier(new_rate)
+        logger.info(f"[SPEED  ] {new_rate}x")
+        # Sync menu checkmarks
+        for value, action in getattr(self, "_speed_actions", []):
+            action.setChecked(value == new_rate)
+        self.update()
+
     # ================= START / STOP =================
     def start_capture(self):
         if self.running:
@@ -506,6 +546,7 @@ class Overlay(QWidget):
             self.toggle_button_rect(),
             self.speed_up_button_rect(),
             self.speed_down_button_rect(),
+            self.speed_display_rect(),
         ]
         for rect in rects:
             left = max(0, rect.left() - expand)

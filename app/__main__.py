@@ -68,14 +68,18 @@ def main():
     speed_menu = options_menu.addMenu("Speed")
     speed_group = QActionGroup(menu_bar)
     speed_group.setExclusive(True)
+    speed_levels = [("0.75x", 0.75), ("1x", 1.0), ("1.25x", 1.25), ("1.5x", 1.5), ("1.75x", 1.75), ("2x", 2.0)]
     default_multiplier = overlay.tts_worker.get_rate_multiplier()
-    for label, value in [("0.75x", 0.75), ("1x", 1.0), ("1.25x", 1.25), ("1.5x", 1.5), ("1.75x", 1.75), ("2x", 2.0)]:
+    speed_actions = []
+    for label, value in speed_levels:
         action = QAction(label, menu_bar)
         action.setCheckable(True)
         action.setChecked(value == default_multiplier)
         action.triggered.connect(lambda checked, v=value: overlay.tts_worker.set_base_rate_multiplier(v))
         speed_group.addAction(action)
         speed_menu.addAction(action)
+        speed_actions.append((value, action))
+    overlay.bind_speed_actions(speed_actions)
 
     auto_speed_action = QAction("Auto Speed", menu_bar)
     auto_speed_action.setCheckable(True)
