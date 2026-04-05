@@ -46,6 +46,7 @@ class Overlay(QWidget):
         self.status_indicator_size = 14
         self.close_button_size = 14
         self.toggle_button_size = 14
+        self.speed_button_size = 14
         self.setMouseTracking(True)
         self.restore_last_geometry()
 
@@ -93,6 +94,8 @@ class Overlay(QWidget):
         status_indicator = self.status_indicator_rect()
         close_button = self.close_button_rect()
         toggle_button = self.toggle_button_rect()
+        speed_up_button = self.speed_up_button_rect()
+        speed_down_button = self.speed_down_button_rect()
 
         painter.fillRect(move_handle, QColor(255, 255, 255, 210))
         painter.fillRect(resize_handle, QColor(255, 255, 255, 210))
@@ -102,16 +105,22 @@ class Overlay(QWidget):
             painter.fillRect(status_indicator, QColor(170, 170, 170, 180))
         painter.fillRect(close_button, QColor(255, 255, 255, 210))
         painter.fillRect(toggle_button, QColor(255, 255, 255, 210))
+        painter.fillRect(speed_up_button, QColor(255, 255, 255, 210))
+        painter.fillRect(speed_down_button, QColor(255, 255, 255, 210))
         painter.setPen(QPen(QColor(255, 0, 0), 2))
         painter.drawRect(move_handle)
         painter.drawRect(resize_handle)
         painter.drawRect(status_indicator)
         painter.drawRect(close_button)
         painter.drawRect(toggle_button)
+        painter.drawRect(speed_up_button)
+        painter.drawRect(speed_down_button)
         self.draw_move_icon(painter, move_handle)
         self.draw_resize_icon(painter, resize_handle)
         self.draw_close_icon(painter, close_button)
         self.draw_toggle_icon(painter, toggle_button)
+        self.draw_plus_icon(painter, speed_up_button)
+        self.draw_minus_icon(painter, speed_down_button)
 
     def draw_move_icon(self, painter, rect):
         cx = rect.x() + (rect.width() / 2.0)
@@ -199,6 +208,25 @@ class Overlay(QWidget):
             painter.drawPolygon(triangle)
             painter.setBrush(Qt.NoBrush)
 
+    def draw_plus_icon(self, painter, rect):
+        icon_pen = QPen(QColor(200, 0, 0), 2)
+        icon_pen.setCapStyle(Qt.RoundCap)
+        painter.setPen(icon_pen)
+        cx = rect.left() + rect.width() // 2
+        cy = rect.top() + rect.height() // 2
+        arm = 3
+        painter.drawLine(cx - arm, cy, cx + arm, cy)
+        painter.drawLine(cx, cy - arm, cx, cy + arm)
+
+    def draw_minus_icon(self, painter, rect):
+        icon_pen = QPen(QColor(200, 0, 0), 2)
+        icon_pen.setCapStyle(Qt.RoundCap)
+        painter.setPen(icon_pen)
+        cx = rect.left() + rect.width() // 2
+        cy = rect.top() + rect.height() // 2
+        arm = 3
+        painter.drawLine(cx - arm, cy, cx + arm, cy)
+
     def move_handle_rect(self):
         padding = 6
         return QRect(
@@ -246,6 +274,26 @@ class Overlay(QWidget):
             self.close_button_size,
         )
 
+    def speed_up_button_rect(self):
+        gap = 4
+        close = self.close_button_rect()
+        return QRect(
+            close.left(),
+            close.top() - self.speed_button_size - gap,
+            self.speed_button_size,
+            self.speed_button_size,
+        )
+
+    def speed_down_button_rect(self):
+        gap = 4
+        up = self.speed_up_button_rect()
+        return QRect(
+            up.left(),
+            up.top() - self.speed_button_size - gap,
+            self.speed_button_size,
+            self.speed_button_size,
+        )
+
     # ================= MOUSE EVENTS =================
     def mousePressEvent(self, event):
         self.start_pos = event.globalPos()
@@ -260,6 +308,16 @@ class Overlay(QWidget):
             else:
                 self.start_capture()
             return
+        if self.speed_up_button_rect().contains(event.pos()):
+            new_rate = round(min(self.tts_worker.base_rate_multiplier + 0.25, 3.0), 2)
+            self.tts_worker.set_base_rate_multiplier(new_rate)
+            logger.info(f"[SPEED  ] {new_rate}x")
+            return
+        if self.speed_down_button_rect().contains(event.pos()):
+            new_rate = round(max(self.tts_worker.base_rate_multiplier - 0.25, 0.5), 2)
+            self.tts_worker.set_base_rate_multiplier(new_rate)
+            logger.info(f"[SPEED  ] {new_rate}x")
+            return
         if self.move_handle_rect().contains(event.pos()):
             self.resizing = "move_handle"
         elif self.resize_handle_rect().contains(event.pos()):
@@ -269,7 +327,10 @@ class Overlay(QWidget):
 
     def mouseMoveEvent(self, event):
         # Cursor change
-        if self.close_button_rect().contains(event.pos()) or self.toggle_button_rect().contains(event.pos()):
+        if any(r.contains(event.pos()) for r in [
+            self.close_button_rect(), self.toggle_button_rect(),
+            self.speed_up_button_rect(), self.speed_down_button_rect(),
+        ]):
             self.setCursor(QCursor(Qt.PointingHandCursor))
         elif self.move_handle_rect().contains(event.pos()):
             self.setCursor(QCursor(Qt.SizeAllCursor))
@@ -442,6 +503,9 @@ class Overlay(QWidget):
             self.resize_handle_rect(),
             self.status_indicator_rect(),
             self.close_button_rect(),
+            self.toggle_button_rect(),
+            self.speed_up_button_rect(),
+            self.speed_down_button_rect(),
         ]
         for rect in rects:
             left = max(0, rect.left() - expand)
