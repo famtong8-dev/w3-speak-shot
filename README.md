@@ -50,16 +50,27 @@ uv run python app
 
 ## Quick Usage
 
-- Move the frame using the **top-left square** handle.
-- Resize using the **top-right square** handle.
-- **Bottom-left green square** shows capture/running status.
-- **Bottom-right `X`** square closes the app.
-- Use the `Options` menu:
-  - `Start` — begin screen capture and OCR
-  - `Stop` — stop capture
-  - `Speed` — adjust TTS playback speed (0.75x – 2x)
-  - `Auto Speed` — when enabled, automatically increases speed by +0.25x when the TTS queue has 2 or more pending items (default: off)
-  - `Close App`
+### Overlay controls
+
+| Control | Location | Action |
+|---|---|---|
+| Move handle | Top-left square | Drag to reposition |
+| Resize handle | Top-right square | Drag to resize |
+| Status indicator | Bottom-left (●) | Green = running, grey = stopped |
+| Start/Stop button | Bottom-left (▶/■) | Toggle capture on/off |
+| Skip to latest (>>) | Bottom-left | Drain queue, jump to most recent text |
+| Queue count | Bottom-left (number) | Shows pending items in TTS queue |
+| Speed down (−) | Bottom-right | Decrease TTS speed by 0.25x |
+| Speed up (+) | Bottom-right | Increase TTS speed by 0.25x |
+| Speed display | Bottom-right (number) | Shows current TTS speed |
+| Close (X) | Bottom-right | Close the app |
+
+### Options menu
+
+- `Start` / `Stop` — begin or stop screen capture and OCR
+- `Speed` — adjust TTS playback speed (0.75x – 2x)
+- `Auto Speed` — automatically increases speed by +0.25x when queue ≥ 2 (default: off). Only affects newly queued items, not items already pre-rendered in queue.
+- `Close App`
 
 The app persists last window position/size in `app/store/.overlay_state.json`.
 
@@ -75,8 +86,8 @@ cp .env.example .env
 | --------------------- | ------- | -------------------------------------------------------------------- |
 | `W3_TTS_SPEED_FACTOR` | `1.5`   | Base audio speed-up factor (e.g. `1.0` = normal, `2.0` = 2x faster) |
 | `W3_DEBUG_TTS_OUTPUT` | —       | Path to save TTS audio as WAV instead of playing                     |
-| `W3_KEEP_TEMP_AUDIO`  | `false` | Keep temp WAV files after playback                                   |
-| `W3_TEMP_AUDIO_DIR`   | sys tmp | Directory for temp WAV files                                         |
+| `W3_KEEP_TEMP_AUDIO`  | `false` | Keep temp WAV files after playback (Linux: n/a, uses stdin pipe)     |
+| `W3_TEMP_AUDIO_DIR`   | sys tmp | Directory for temp WAV files (macOS fallback only)                   |
 
 Variables set in the shell take precedence over `.env`.
 
@@ -95,13 +106,25 @@ flowchart TD
     G -- Yes --> H[TTSWorker prepare_text]
     H --> I{Skip?}
     I -- contains œ --> B
-    I -- No --> J[Infer Audio with VieNeu Turbo<br/>Cache Result LRU]
+    I -- No --> J[Background Thread:<br/>Infer Audio - VieNeu LRU Cache<br/>+ Resample at current speed]
     J --> K{Audio too long?}
     K -- Yes, likely stuck --> B
-    K -- No --> L[Queue for Playback]
-    L --> M[Play Audio via temp WAV file]
+    K -- No --> L[Queue pre-rendered audio array]
+    L --> M[Play Audio via stdin pipe / temp WAV]
     M --> B
 ```
+
+## Audio Pipeline
+
+Each sentence goes through a background thread (runs in parallel while previous audio plays):
+
+1. **Inference** — VieNeu TTS generates raw audio, cached by text (LRU, 50 items)
+2. **Resample** — speed-up applied at queue time using `scipy.signal.resample`
+3. **Queue** — pre-rendered `float32` array stored in playback queue
+
+The `run()` thread dequeues and plays immediately with no additional processing, eliminating the resample gap between sentences.
+
+> **Note:** Speed changes (`+`/`−` buttons or Options menu) only apply to items queued *after* the change. Items already in the queue play at the speed they were rendered at.
 
 ## Skip Conditions
 
@@ -118,6 +141,8 @@ app/
 ├── overlay.py        Overlay UI, capture loop, frame change detection, OCR orchestration
 ├── overlay_text.py   OCR text processor — sanitization, noise filtering, similarity comparison
 ├── tts_worker.py     TTS worker thread — VieNeu inference, LRU audio cache, playback, speed control
+├── audio_player.py   Audio playback — stdin pipe (Linux) or temp file (macOS)
+├── audio_utils.py    Shared audio helpers — convert, infer, speed up
 └── store/
     ├── logo.icns             App icon (macOS)
     ├── logo.ico              App icon (Windows)
@@ -158,7 +183,7 @@ uv pip install vieneu
 
 **No audio output (Linux)**
 ```sh
-# Ensure paplay is available (used for playback)
+# Ensure paplay is available (used for playback via stdin pipe)
 sudo apt-get install pulseaudio-utils
 ```
 

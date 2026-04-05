@@ -37,6 +37,7 @@ class TTSWorker(threading.Thread):
         self.rate_multiplier = max(0.1, self._read_env_float("W3_TTS_SPEED_FACTOR", 1.5))
         self.base_rate_multiplier = self.rate_multiplier
         self.auto_speed = False
+        self.pre_render = True  # Pre-render audio in background to reduce gap between sentences
 
         # Debug mode: save audio to file instead of playing
         self.debug_output_file = debug_output_file
@@ -102,17 +103,17 @@ class TTSWorker(threading.Thread):
         with self.infer_lock:
             return infer_audio(self.tts_engine, text, sample_rate=self.sample_rate)
 
-    def _play_segment_with_vieneu(self, text, voice):
+    def _play_segment_with_vieneu(self, text, audio_data):
         if not self.tts_engine:
             return
         try:
-            # Use cached audio or generate
-            audio_data = self._get_cached_audio(text)
-            if audio_data is None or len(audio_data) < 100:
+            if audio_data is None:
+                raw = self._get_cached_audio(text)
+                if raw is None or len(raw) < 100:
+                    return
+                audio_data = self._speed_up_audio(raw, speed_factor=self.get_rate_multiplier())
+            if len(audio_data) < 100:
                 return
-
-            # Apply speed dynamically so Set Speed takes effect without re-inference
-            audio_data = self._speed_up_audio(audio_data, speed_factor=self.get_rate_multiplier())
 
             # Validate audio - must be finite and properly shaped
             if not np.all(np.isfinite(audio_data)):
@@ -157,12 +158,11 @@ class TTSWorker(threading.Thread):
     def _convert_audio_to_array(self, audio):
         return convert_audio_to_array(audio)
 
-    def _play_text_with_vieneu(self, text):
+    def _play_text_with_vieneu(self, text, audio_data):
         try:
             if self.stop_requested.is_set():
                 return
-            # Play entire text at once (VieNeu handles EN/VI internally)
-            self._play_segment_with_vieneu(text, None)
+            self._play_segment_with_vieneu(text, audio_data)
         except Exception as err:
             logger.error(f"TTS error (VieNeu playback): {err}")
             with self.runtime_lock:
@@ -179,6 +179,11 @@ class TTSWorker(threading.Thread):
             if item is self.stop_token:
                 break
 
+            if isinstance(item, tuple):
+                text, audio_data = item
+            else:
+                text, audio_data = item, None
+
             # Auto-adjust speed based on queue size
             if self.auto_speed:
                 queue_size = self.text_queue.qsize()
@@ -190,17 +195,24 @@ class TTSWorker(threading.Thread):
                     self.set_rate_multiplier(self.base_rate_multiplier)
 
             self.stop_requested.clear()
-            self._play_text_with_vieneu(item)
+            self._play_text_with_vieneu(text, audio_data)
 
     def speak(self, text):
         prepared = self.prepare_text(text)
         if not prepared:
             return
 
-        # Infer + queue in background (infer THEN queue)
+        # Infer + resample in background, queue pre-rendered audio to eliminate
+        # resample latency between sentences.
         def infer_and_queue():
-            self._get_cached_audio(prepared)  # Wait for inference
-            self.text_queue.put(prepared)      # Queue only after cached
+            raw = self._get_cached_audio(prepared)
+            if raw is None:
+                return
+            if self.pre_render:
+                sped = self._speed_up_audio(raw, speed_factor=self.get_rate_multiplier())
+                self.text_queue.put((prepared, sped))
+            else:
+                self.text_queue.put(prepared)
 
         threading.Thread(target=infer_and_queue, daemon=True).start()
 
