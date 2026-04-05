@@ -3,13 +3,12 @@ import logging
 import os
 import threading
 import time
-from datetime import datetime
 from difflib import SequenceMatcher
 
 import mss
 import pytesseract
 from PIL import Image, ImageDraw
-from PyQt5.QtCore import Qt, QTimer, QRect, QPointF
+from PyQt5.QtCore import Qt, QTimer, QRect, QPointF, QPoint
 from PyQt5.QtGui import QPainter, QPen, QColor, QCursor, QFont, QPolygon
 from PyQt5.QtWidgets import QWidget
 
@@ -219,7 +218,6 @@ class Overlay(QWidget):
             cy_mid = rect.top() + rect.height() // 2
             tip = rect.right() - 3
             painter.setBrush(QColor(200, 0, 0))
-            from PyQt5.QtCore import QPoint
             triangle = QPolygon([
                 QPoint(cx, rect.top() + 3),
                 QPoint(cx, rect.bottom() - 3),
@@ -230,7 +228,7 @@ class Overlay(QWidget):
 
     def draw_queue_display(self, painter, rect):
         count = self.tts_worker.text_queue.qsize()
-        font = QFont("Arial", 6, QFont.Bold)
+        font = QFont("Arial", 8, QFont.Bold)
         painter.setFont(font)
         painter.setPen(QPen(QColor(200, 0, 0), 1))
         painter.drawText(rect, Qt.AlignCenter, str(count))
@@ -263,7 +261,7 @@ class Overlay(QWidget):
     def draw_speed_display(self, painter, rect):
         speed = self.tts_worker.get_rate_multiplier()
         label = f"{speed:.2f}".rstrip("0").rstrip(".")
-        font = QFont("Arial", 6, QFont.Bold)
+        font = QFont("Arial", 8, QFont.Bold)
         painter.setFont(font)
         painter.setPen(QPen(QColor(200, 0, 0), 1))
         painter.drawText(rect, Qt.AlignCenter, label)

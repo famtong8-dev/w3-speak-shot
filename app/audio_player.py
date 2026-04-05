@@ -5,6 +5,8 @@ import os
 import platform
 import subprocess
 import tempfile
+import threading
+import time
 
 import soundfile as sf
 
@@ -30,7 +32,6 @@ def cleanup_old_temp_files() -> None:
     """Remove stale temp WAV files older than 2 hours."""
     temp_dir = os.getenv("W3_TEMP_AUDIO_DIR", tempfile.gettempdir())
     max_age_sec = 7200
-    import time
     now = time.time()
     try:
         for fname in os.listdir(temp_dir):

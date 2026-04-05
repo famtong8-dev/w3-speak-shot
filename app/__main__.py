@@ -84,13 +84,20 @@ def main():
     auto_speed_action = QAction("Auto Speed", menu_bar)
     auto_speed_action.setCheckable(True)
     auto_speed_action.setChecked(overlay.tts_worker.auto_speed)
-    auto_speed_action.triggered.connect(lambda checked: (setattr(overlay.tts_worker, "auto_speed", checked), logging.getLogger(__name__).info(f"[CONFIG ] auto_speed={'on' if checked else 'off'}")))
+    def _set_auto_speed(checked):
+        overlay.tts_worker.auto_speed = checked
+        logging.getLogger(__name__).info(f"[CONFIG ] auto_speed={'on' if checked else 'off'}")
+    auto_speed_action.triggered.connect(_set_auto_speed)
     options_menu.addAction(auto_speed_action)
 
     pre_render_action = QAction("Pre-render Audio", menu_bar)
     pre_render_action.setCheckable(True)
     pre_render_action.setChecked(overlay.tts_worker.pre_render)
-    pre_render_action.triggered.connect(lambda checked: (setattr(overlay.tts_worker, "pre_render", checked), logging.getLogger(__name__).info(f"[CONFIG ] pre_render={'on' if checked else 'off'}")))
+
+    def _set_pre_render(checked):
+        overlay.tts_worker.pre_render = checked
+        logging.getLogger(__name__).info(f"[CONFIG ] pre_render={'on' if checked else 'off'}")
+    pre_render_action.triggered.connect(_set_pre_render)
     options_menu.addAction(pre_render_action)
 
     options_menu.addAction(close_action)

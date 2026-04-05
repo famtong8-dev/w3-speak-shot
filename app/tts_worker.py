@@ -6,6 +6,7 @@ import time
 from collections import OrderedDict
 
 import numpy as np
+from scipy.io import wavfile as scipy_wavfile
 from vieneu import Vieneu
 
 try:
@@ -28,16 +29,14 @@ class TTSWorker(threading.Thread):
         self.stop_token = object()
         self.base_rate_wpm = max(120, int(base_rate_wpm))
         self.config_lock = threading.Lock()
-        self.runtime_lock = threading.Lock()
         self.infer_lock = threading.Lock()
-        self.current_proc = None
         self.stop_requested = threading.Event()
         # rate_multiplier is the actual playback speed (e.g. 1.5 = 1.5x).
         # Seeded from W3_TTS_SPEED_FACTOR so the menu reflects the real default.
         self.rate_multiplier = max(0.1, self._read_env_float("W3_TTS_SPEED_FACTOR", 1.5))
         self.base_rate_multiplier = self.rate_multiplier
-        self.auto_speed = False
-        self.pre_render = True  # Pre-render audio in background to reduce gap between sentences
+        self._auto_speed = False
+        self._pre_render = True  # Pre-render audio in background to reduce gap between sentences
 
         # Debug mode: save audio to file instead of playing
         self.debug_output_file = debug_output_file
@@ -115,38 +114,21 @@ class TTSWorker(threading.Thread):
             if len(audio_data) < 100:
                 return
 
-            # Validate audio - must be finite and properly shaped
             if not np.all(np.isfinite(audio_data)):
                 return
 
-            with self.runtime_lock:
-                self.current_proc = True
-
-            try:
-                # Debug mode: buffer audio to file
-                if self.debug_output_file:
-                    with self.debug_buffer_lock:
-                        self.debug_audio_buffer.append(audio_data)
-                        total_samples = sum(len(a) for a in self.debug_audio_buffer)
-                    logger.info(f"[DEBUG  ] Audio buffered ({len(audio_data)} samples, total: {total_samples} samples)")
-                else:
-                    # Normal mode: play audio via temp file (BLOCKING)
-                    logger.debug("Playing audio via temp file (blocking)")
-                    self._play_audio_file_based(audio_data)
-                    logger.debug("Audio playback complete")
-
-                    # Periodic cleanup of old temp files (async to avoid blocking)
-                    self.speak_count += 1
-                    if self.speak_count % self.cleanup_interval == 0:
-                        cleanup_thread = threading.Thread(target=self._cleanup_old_temp_files, daemon=True)
-                        cleanup_thread.start()
-            finally:
-                with self.runtime_lock:
-                    self.current_proc = None
+            if self.debug_output_file:
+                with self.debug_buffer_lock:
+                    self.debug_audio_buffer.append(audio_data)
+                    total_samples = sum(len(a) for a in self.debug_audio_buffer)
+                logger.info(f"[DEBUG  ] Audio buffered ({len(audio_data)} samples, total: {total_samples} samples)")
+            else:
+                self._play_audio_file_based(audio_data)
+                self.speak_count += 1
+                if self.speak_count % self.cleanup_interval == 0:
+                    threading.Thread(target=self._cleanup_old_temp_files, daemon=True).start()
         except Exception as err:
             logger.error(f"TTS error (playback): {err}")
-            with self.runtime_lock:
-                self.current_proc = None
 
     def _play_audio_file_based(self, audio_data):
         with self.playback_lock:
@@ -155,18 +137,10 @@ class TTSWorker(threading.Thread):
     def _cleanup_old_temp_files(self):
         audio_player.cleanup_old_temp_files()
 
-    def _convert_audio_to_array(self, audio):
-        return convert_audio_to_array(audio)
-
     def _play_text_with_vieneu(self, text, audio_data):
-        try:
-            if self.stop_requested.is_set():
-                return
-            self._play_segment_with_vieneu(text, audio_data)
-        except Exception as err:
-            logger.error(f"TTS error (VieNeu playback): {err}")
-            with self.runtime_lock:
-                self.current_proc = None
+        if self.stop_requested.is_set():
+            return
+        self._play_segment_with_vieneu(text, audio_data)
 
     def run(self):
         while True:
@@ -188,7 +162,7 @@ class TTSWorker(threading.Thread):
             if self.auto_speed:
                 queue_size = self.text_queue.qsize()
                 if queue_size >= 2:
-                    new_rate = self.base_rate_multiplier + 0.25
+                    new_rate = min(self.base_rate_multiplier + 0.25, 3.0)
                     self.set_rate_multiplier(new_rate)
                     logger.info(f"[SPEED  ] auto {new_rate:.2f}x (queue={queue_size})")
                 else:
@@ -212,7 +186,7 @@ class TTSWorker(threading.Thread):
                 sped = self._speed_up_audio(raw, speed_factor=self.get_rate_multiplier())
                 self.text_queue.put((prepared, sped))
             else:
-                self.text_queue.put(prepared)
+                self.text_queue.put(prepared)  # resample happens at play time
 
         threading.Thread(target=infer_and_queue, daemon=True).start()
 
@@ -252,6 +226,26 @@ class TTSWorker(threading.Thread):
     def get_rate_wpm(self):
         with self.config_lock:
             return max(120, int(self.base_rate_wpm * self.rate_multiplier))
+
+    @property
+    def auto_speed(self):
+        with self.config_lock:
+            return self._auto_speed
+
+    @auto_speed.setter
+    def auto_speed(self, value):
+        with self.config_lock:
+            self._auto_speed = bool(value)
+
+    @property
+    def pre_render(self):
+        with self.config_lock:
+            return self._pre_render
+
+    @pre_render.setter
+    def pre_render(self, value):
+        with self.config_lock:
+            self._pre_render = bool(value)
 
     def skip_to_latest(self, text):
         """Drain the queue and speak the latest text after current audio finishes."""
@@ -300,7 +294,7 @@ class TTSWorker(threading.Thread):
                 self.debug_audio_buffer.clear()
 
             logger.info(f"Writing {len(combined_audio)} samples to {self.debug_output_file}")
-            sf.write(self.debug_output_file, combined_audio, self.sample_rate, subtype='FLOAT')
+            scipy_wavfile.write(self.debug_output_file, self.sample_rate, combined_audio)
             logger.info(f"✓ Debug audio saved to {self.debug_output_file} ({len(combined_audio)} samples)")
         except Exception as err:
             logger.error(f"Failed to save debug audio: {err}", exc_info=True)
