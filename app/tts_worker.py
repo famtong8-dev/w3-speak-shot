@@ -1,20 +1,19 @@
 import logging
 import os
 import queue
-import subprocess
-import tempfile
 import threading
 import time
 from collections import OrderedDict
 
 import numpy as np
-import soundfile as sf
 from vieneu import Vieneu
 
 try:
     from .audio_utils import convert_audio_to_array, infer_audio, speed_up_audio
+    from . import audio_player
 except ImportError:
     from audio_utils import convert_audio_to_array, infer_audio, speed_up_audio
+    import audio_player
 
 logger = logging.getLogger(__name__)
 
@@ -149,85 +148,11 @@ class TTSWorker(threading.Thread):
                 self.current_proc = None
 
     def _play_audio_file_based(self, audio_data):
-        """Play audio via temp file + subprocess (avoids sounddevice issues)."""
-        # LOCK entire playback operation to prevent parallel playback
         with self.playback_lock:
-            try:
-                # Write to temp file
-                keep_temp = os.getenv("W3_KEEP_TEMP_AUDIO", "").lower() == "true"
-                temp_dir = os.getenv("W3_TEMP_AUDIO_DIR", tempfile.gettempdir())
-
-                with tempfile.NamedTemporaryFile(suffix='.wav', dir=temp_dir, delete=False) as tmp:
-                    temp_path = tmp.name
-
-                sf.write(temp_path, audio_data, self.sample_rate, subtype='FLOAT')
-
-                # Log file info
-                file_size_kb = os.path.getsize(temp_path) / 1024
-                duration_sec = len(audio_data) / self.sample_rate
-                logger.info(f"[AUDIO  ] {duration_sec:.1f}s | {file_size_kb:.1f}KB")
-
-                # Detect OS and use appropriate player
-                import platform
-                system = platform.system()
-
-                if system == 'Darwin':  # macOS
-                    cmd = ['afplay', temp_path]
-                elif system == 'Linux':
-                    # Try multiple players: paplay, aplay, ffplay
-                    cmd = ['paplay', '--latency=100ms', temp_path]  # PulseAudio with low latency
-                else:
-                    logger.warning(f"Unsupported OS for file-based playback: {system}")
-                    return
-
-                # Play and WAIT (BLOCKING)
-                try:
-                    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-                    # BLOCK until current process finishes
-                    logger.debug("Playing audio (blocking)...")
-                    proc.wait()  # Block until audio finishes
-                    logger.debug(f"Audio playback finished (return code: {proc.returncode})")
-
-                    # Clean up temp file
-                    if not keep_temp:
-                        try:
-                            os.unlink(temp_path)
-                        except Exception:
-                            pass
-
-                except FileNotFoundError:
-                    logger.error(f"Audio player not found. Install: afplay (macOS), paplay/aplay (Linux)")
-                    try:
-                        os.unlink(temp_path)
-                    except Exception:
-                        pass
-
-            except Exception as err:
-                logger.error(f"Audio file playback error: {err}")
+            audio_player.play(audio_data, self.sample_rate)
 
     def _cleanup_old_temp_files(self):
-        """Remove old temp audio files to prevent disk space buildup."""
-        try:
-            temp_dir = os.getenv("W3_TEMP_AUDIO_DIR", tempfile.gettempdir())
-            max_age_hours = 2  # Delete files older than 2 hours
-
-            now = time.time()
-            for fname in os.listdir(temp_dir):
-                if not fname.startswith('tmp') or not fname.endswith('.wav'):
-                    continue
-
-                fpath = os.path.join(temp_dir, fname)
-                try:
-                    age_hours = (now - os.path.getmtime(fpath)) / 3600
-                    if age_hours > max_age_hours:
-                        os.unlink(fpath)
-                        logger.debug(f"Cleaned up old temp file: {fname}")
-                except Exception:
-                    pass
-
-        except Exception as err:
-            logger.debug(f"Cleanup error: {err}")
+        audio_player.cleanup_old_temp_files()
 
     def _convert_audio_to_array(self, audio):
         return convert_audio_to_array(audio)

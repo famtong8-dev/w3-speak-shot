@@ -45,6 +45,7 @@ class Overlay(QWidget):
         self.move_handle_size = 14
         self.status_indicator_size = 14
         self.close_button_size = 14
+        self.toggle_button_size = 14
         self.setMouseTracking(True)
         self.restore_last_geometry()
 
@@ -87,11 +88,11 @@ class Overlay(QWidget):
         painter.setPen(pen)
         painter.drawRect(self.rect())
 
-        # Top-right resize handle
         move_handle = self.move_handle_rect()
         resize_handle = self.resize_handle_rect()
         status_indicator = self.status_indicator_rect()
         close_button = self.close_button_rect()
+        toggle_button = self.toggle_button_rect()
 
         painter.fillRect(move_handle, QColor(255, 255, 255, 210))
         painter.fillRect(resize_handle, QColor(255, 255, 255, 210))
@@ -100,14 +101,17 @@ class Overlay(QWidget):
         else:
             painter.fillRect(status_indicator, QColor(170, 170, 170, 180))
         painter.fillRect(close_button, QColor(255, 255, 255, 210))
+        painter.fillRect(toggle_button, QColor(255, 255, 255, 210))
         painter.setPen(QPen(QColor(255, 0, 0), 2))
         painter.drawRect(move_handle)
         painter.drawRect(resize_handle)
         painter.drawRect(status_indicator)
         painter.drawRect(close_button)
+        painter.drawRect(toggle_button)
         self.draw_move_icon(painter, move_handle)
         self.draw_resize_icon(painter, resize_handle)
         self.draw_close_icon(painter, close_button)
+        self.draw_toggle_icon(painter, toggle_button)
 
     def draw_move_icon(self, painter, rect):
         cx = rect.x() + (rect.width() / 2.0)
@@ -166,6 +170,35 @@ class Overlay(QWidget):
         painter.drawLine(left, top, right, bottom)
         painter.drawLine(left, bottom, right, top)
 
+    def draw_toggle_icon(self, painter, rect):
+        icon_pen = QPen(QColor(200, 0, 0), 1.5)
+        icon_pen.setCapStyle(Qt.RoundCap)
+        icon_pen.setJoinStyle(Qt.RoundJoin)
+        painter.setPen(icon_pen)
+        if self.running:
+            # Stop icon: two vertical bars (■ simplified as ▐▌)
+            lx = rect.left() + 4
+            rx = rect.right() - 4
+            ty = rect.top() + 3
+            by = rect.bottom() - 3
+            painter.drawLine(lx, ty, lx, by)
+            painter.drawLine(rx, ty, rx, by)
+        else:
+            # Play icon: triangle ▶
+            cx = rect.left() + 4
+            cy_mid = rect.top() + rect.height() // 2
+            tip = rect.right() - 3
+            painter.setBrush(QColor(200, 0, 0))
+            from PyQt5.QtGui import QPolygon
+            from PyQt5.QtCore import QPoint
+            triangle = QPolygon([
+                QPoint(cx, rect.top() + 3),
+                QPoint(cx, rect.bottom() - 3),
+                QPoint(tip, cy_mid),
+            ])
+            painter.drawPolygon(triangle)
+            painter.setBrush(Qt.NoBrush)
+
     def move_handle_rect(self):
         padding = 6
         return QRect(
@@ -193,6 +226,17 @@ class Overlay(QWidget):
             self.status_indicator_size,
         )
 
+    def toggle_button_rect(self):
+        padding = 6
+        gap = 4
+        status = self.status_indicator_rect()
+        return QRect(
+            padding,
+            status.top() - self.toggle_button_size - gap,
+            self.toggle_button_size,
+            self.toggle_button_size,
+        )
+
     def close_button_rect(self):
         padding = 6
         return QRect(
@@ -210,6 +254,12 @@ class Overlay(QWidget):
         if self.close_button_rect().contains(event.pos()):
             self.close()
             return
+        if self.toggle_button_rect().contains(event.pos()):
+            if self.running:
+                self.stop_capture()
+            else:
+                self.start_capture()
+            return
         if self.move_handle_rect().contains(event.pos()):
             self.resizing = "move_handle"
         elif self.resize_handle_rect().contains(event.pos()):
@@ -219,7 +269,7 @@ class Overlay(QWidget):
 
     def mouseMoveEvent(self, event):
         # Cursor change
-        if self.close_button_rect().contains(event.pos()):
+        if self.close_button_rect().contains(event.pos()) or self.toggle_button_rect().contains(event.pos()):
             self.setCursor(QCursor(Qt.PointingHandCursor))
         elif self.move_handle_rect().contains(event.pos()):
             self.setCursor(QCursor(Qt.SizeAllCursor))
