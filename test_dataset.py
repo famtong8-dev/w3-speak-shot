@@ -13,100 +13,32 @@ import sys
 
 import numpy as np
 import soundfile as sf
-from scipy import signal
 from vieneu import Vieneu
+
+try:
+    from app.audio_utils import SAMPLE_RATE as _AUDIO_SAMPLE_RATE
+    from app.audio_utils import infer_audio, speed_up_audio
+except ImportError:
+    from audio_utils import SAMPLE_RATE as _AUDIO_SAMPLE_RATE
+    from audio_utils import infer_audio, speed_up_audio
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
-SAMPLE_RATE = 24000
+SAMPLE_RATE = _AUDIO_SAMPLE_RATE
 SPEED_FACTOR = float(os.getenv("W3_TTS_SPEED_FACTOR", "1.5"))
 DATASET_FILE = os.path.join(os.path.dirname(__file__), "data", "dataset-test.txt")
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "test")
 
 
-# ── Copied verbatim from TTSWorker ──────────────────────────────────────────
-
-def _convert_audio_to_array(audio):
-    """Convert various audio formats to numpy array."""
-    try:
-        if isinstance(audio, np.ndarray):
-            arr = audio
-        elif hasattr(audio, 'cpu') and hasattr(audio, 'numpy'):  # PyTorch tensor
-            arr = audio.cpu().detach().numpy()
-        elif hasattr(audio, 'get_array_of_samples'):  # pygame.mixer.Sound
-            arr = audio.get_array_of_samples()
-        else:
-            arr = np.array(audio, dtype=np.float32)
-
-        if arr.ndim > 1:
-            arr = arr.flatten()
-
-        return arr.astype(np.float32)
-    except Exception as err:
-        logger.error(f"_convert_audio_to_array error: {err}")
-        return None
-
-
 def _infer_and_convert(engine, text):
-    """Infer audio and convert to numpy array."""
-    if "œ" in text:
-        logger.warning(f"[SKIP   ] contains 'œ': {text[:60]}")
-        return None
-    try:
-        audio = engine.infer(text=text)
-        if audio is None:
-            return None
-
-        audio_data = _convert_audio_to_array(audio)
-        if audio_data is None or len(audio_data) == 0:
-            return None
-
-        # Ensure audio is float32 and normalized
-        audio_data = audio_data.astype(np.float32)
-        max_val = np.max(np.abs(audio_data))
-        if max_val > 0:
-            audio_data = audio_data / (max_val + 1e-8)
-
-        # Reject audio that is suspiciously long (model stuck in loop)
-        max_duration = max(5.0, len(text) * 0.15)
-        actual_duration = len(audio_data) / SAMPLE_RATE
-        if actual_duration > max_duration:
-            logger.warning(f"[SKIP   ] {actual_duration:.1f}s > {max_duration:.1f}s limit — likely stuck: {text[:60]}")
-            return None
-
-        return audio_data
-    except Exception as err:
-        logger.error(f"_infer_and_convert error: {err}")
-        return None
+    """Thin wrapper around audio_utils.infer_audio for backward compatibility."""
+    return infer_audio(engine, text, sample_rate=SAMPLE_RATE)
 
 
 def _speed_up_audio(audio_data, speed_factor=1.2):
-    """Speed up audio by resampling with fade-out."""
-    if speed_factor <= 1.0 or len(audio_data) == 0:
-        return audio_data
-    try:
-        new_length = int(len(audio_data) / speed_factor)
-        if new_length < 100:
-            return audio_data
-
-        resampled = signal.resample(audio_data, new_length)
-        resampled = resampled.astype(np.float32)
-
-        # Clamp to [-1, 1] range to prevent overflow
-        resampled = np.clip(resampled, -1.0, 1.0)
-
-        # Add fade-out in last 50ms to prevent clicking
-        fade_samples = min(int(SAMPLE_RATE * 0.05), len(resampled) // 4)
-        if len(resampled) > fade_samples and fade_samples > 0:
-            fade_start = len(resampled) - fade_samples
-            fade_out = np.linspace(1.0, 0.0, fade_samples)
-            resampled[fade_start:] *= fade_out
-
-        return resampled
-    except Exception as err:
-        logger.error(f"_speed_up_audio error: {err}")
-        return audio_data
+    """Thin wrapper around audio_utils.speed_up_audio for backward compatibility."""
+    return speed_up_audio(audio_data, speed_factor=speed_factor, sample_rate=SAMPLE_RATE)
 
 
 # ── Main ────────────────────────────────────────────────────────────────────

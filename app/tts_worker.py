@@ -9,8 +9,12 @@ from collections import OrderedDict
 
 import numpy as np
 import soundfile as sf
-from scipy import signal
 from vieneu import Vieneu
+
+try:
+    from .audio_utils import convert_audio_to_array, infer_audio, speed_up_audio
+except ImportError:
+    from audio_utils import convert_audio_to_array, infer_audio, speed_up_audio
 
 logger = logging.getLogger(__name__)
 
@@ -47,8 +51,6 @@ class TTSWorker(threading.Thread):
         # Periodic cleanup of old temp files (every 100 spoken items)
         self.speak_count = 0
         self.cleanup_interval = 100
-        # Track subprocess for cleanup
-        self.current_playback_process = None
         self.playback_lock = threading.Lock()
 
         try:
@@ -67,6 +69,7 @@ class TTSWorker(threading.Thread):
         try:
             return float(raw)
         except Exception:
+            logger.warning(f"Invalid value for {key}={raw!r}, using default {default}")
             return float(default)
 
     def _get_cached_audio(self, text):
@@ -89,68 +92,16 @@ class TTSWorker(threading.Thread):
         return audio_data
 
     def _speed_up_audio(self, audio_data, speed_factor=1.2):
-        """Speed up audio by resampling with fade-out."""
-        if speed_factor <= 1.0 or len(audio_data) == 0:
-            return audio_data
-        try:
-            # Reduce number of samples = speed up playback
-            new_length = int(len(audio_data) / speed_factor)
-            if new_length < 100:
-                return audio_data
-
-            resampled = signal.resample(audio_data, new_length)
-            resampled = resampled.astype(np.float32)
-
-            # Clamp to [-1, 1] range to prevent overflow
-            resampled = np.clip(resampled, -1.0, 1.0)
-
-            # Add fade-out in last 50ms to prevent clicking
-            fade_samples = min(int(24000 * 0.05), len(resampled) // 4)  # 50ms or 25% of audio
-            if len(resampled) > fade_samples and fade_samples > 0:
-                fade_start = len(resampled) - fade_samples
-                fade_out = np.linspace(1.0, 0.0, fade_samples)
-                resampled[fade_start:] *= fade_out
-
-            return resampled
-
-        except Exception as err:
-            return audio_data
+        return speed_up_audio(audio_data, speed_factor=speed_factor, sample_rate=self.sample_rate)
 
     def _infer_and_convert(self, text):
-        """Infer audio and convert to numpy array."""
+        """Infer audio and convert to numpy array (serialised via infer_lock)."""
         if not self.tts_engine:
             return None
-        if "œ" in text:
-            logger.warning(f"[SKIP   ] contains 'œ': {text[:60]}")
-            return None
-        try:
-            # Serialize infer calls to avoid race conditions
-            with self.infer_lock:
-                audio = self.tts_engine.infer(text=text)
-            if audio is None:
-                return None
-
-            audio_data = self._convert_audio_to_array(audio)
-            if audio_data is None or len(audio_data) == 0:
-                return None
-
-            # Ensure audio is float32 and normalized
-            audio_data = audio_data.astype(np.float32)
-            max_val = np.max(np.abs(audio_data))
-            if max_val > 0:
-                audio_data = audio_data / (max_val + 1e-8)
-
-            # Reject audio that is suspiciously long (model stuck in loop)
-            max_duration = max(5.0, len(text) * 0.15)
-            actual_duration = len(audio_data) / self.sample_rate
-            if actual_duration > max_duration:
-                logger.warning(f"[SKIP   ] {actual_duration:.1f}s > {max_duration:.1f}s limit — likely stuck: {text[:60]}")
-                return None
-
-            return audio_data
-        except Exception as err:
-            print(f"TTS error (inference): {err}")
-            return None
+        # Acquire lock before entering shared infer_audio helper so inference
+        # calls are serialised even when multiple threads call this method.
+        with self.infer_lock:
+            return infer_audio(self.tts_engine, text, sample_rate=self.sample_rate)
 
     def _play_segment_with_vieneu(self, text, voice):
         if not self.tts_engine:
@@ -279,28 +230,7 @@ class TTSWorker(threading.Thread):
             logger.debug(f"Cleanup error: {err}")
 
     def _convert_audio_to_array(self, audio):
-        """Convert various audio formats to numpy array."""
-        try:
-            # Already a numpy array
-            if isinstance(audio, np.ndarray):
-                arr = audio
-            # Check for torch tensor
-            elif hasattr(audio, 'cpu') and hasattr(audio, 'numpy'):  # PyTorch tensor
-                arr = audio.cpu().detach().numpy()
-            # Check for audio object with specific methods
-            elif hasattr(audio, 'get_array_of_samples'):  # pygame.mixer.Sound
-                arr = audio.get_array_of_samples()
-            else:
-                # Try to convert directly
-                arr = np.array(audio, dtype=np.float32)
-
-            # Ensure it's 1D float array
-            if arr.ndim > 1:
-                arr = arr.flatten()
-
-            return arr.astype(np.float32)
-        except Exception as err:
-            return None
+        return convert_audio_to_array(audio)
 
     def _play_text_with_vieneu(self, text):
         try:
@@ -309,7 +239,7 @@ class TTSWorker(threading.Thread):
             # Play entire text at once (VieNeu handles EN/VI internally)
             self._play_segment_with_vieneu(text, None)
         except Exception as err:
-            print(f"TTS error (VieNeu playback): {err}")
+            logger.error(f"TTS error (VieNeu playback): {err}")
             with self.runtime_lock:
                 self.current_proc = None
 
@@ -349,9 +279,18 @@ class TTSWorker(threading.Thread):
 
         threading.Thread(target=infer_and_queue, daemon=True).start()
 
+    # Maximum characters sent to TTS in one call (prevents model hangs on huge blobs)
+    MAX_TTS_LENGTH = 500
+
     def prepare_text(self, text):
         normalized = self._normalize_tts_text(text)
         if not normalized:
+            return ""
+        if len(normalized) > self.MAX_TTS_LENGTH:
+            logger.warning(
+                f"[SKIP   ] text too long ({len(normalized)} chars > {self.MAX_TTS_LENGTH}): "
+                f"{normalized[:80]}…"
+            )
             return ""
         return normalized
 
