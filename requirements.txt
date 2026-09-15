@@ -2,6 +2,8 @@ mss>=3.9.0
 pytesseract>=0.3.10
 PyQt5>=5.15.0
 Pillow>=10.0.0
-vieneu>=0.1.0
+vieneu==3.7.1
+resemble-perth==1.0.1
+torchaudio==2.11.0  # required by resemble-perth's PerthImplicitWatermarker
 scipy>=1.11.0
 python-dotenv

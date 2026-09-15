@@ -54,7 +54,10 @@ class TTSWorker(threading.Thread):
 
         try:
             self.tts_engine = Vieneu()
-            logger.info("TTS backend: VieNeu-TTS")
+            # vieneu v3's default model is 48 kHz; read the engine's real rate
+            # instead of assuming 24 kHz, or playback is pitched/half-speed.
+            self.sample_rate = int(getattr(self.tts_engine, "sample_rate", self.sample_rate))
+            logger.info(f"TTS backend: VieNeu-TTS ({self.sample_rate} Hz)")
             # Language detection falls back to rules-only (acronyms, camelCase).
         except Exception as err:
             logger.error(f"TTS initialization error: {err}")

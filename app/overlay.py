@@ -9,7 +9,7 @@ import mss
 import pytesseract
 from PIL import Image, ImageDraw
 from PyQt5.QtCore import Qt, QTimer, QRect, QPointF, QPoint
-from PyQt5.QtGui import QPainter, QPen, QColor, QCursor, QFont, QPolygon
+from PyQt5.QtGui import QPainter, QPen, QColor, QCursor, QFont, QPolygon, QGuiApplication
 from PyQt5.QtWidgets import QWidget
 
 logger = logging.getLogger(__name__)
@@ -460,9 +460,21 @@ class Overlay(QWidget):
             y = int(data.get("y", 200))
             width = max(self.min_width, int(data.get("width", 600)))
             height = max(self.min_height, int(data.get("height", 250)))
-            self.setGeometry(x, y, width, height)
+            self.setGeometry(self._clamp_to_screen(QRect(x, y, width, height)))
         except (json.JSONDecodeError, ValueError, TypeError) as err:
             logger.warning(f"Window state restore error: {err}. Using defaults.")
+
+    def _clamp_to_screen(self, rect):
+        # Saved geometry may point at a monitor that's since been unplugged;
+        # Qt would then open the window off-screen. Keep it grabbable.
+        if any(s.availableGeometry().intersects(rect) for s in QGuiApplication.screens()):
+            return rect
+        avail = QGuiApplication.primaryScreen().availableGeometry()
+        rect.moveTo(
+            max(avail.left(), min(rect.x(), avail.right() - rect.width())),
+            max(avail.top(), min(rect.y(), avail.bottom() - rect.height())),
+        )
+        return rect
 
     def save_current_geometry(self):
         try:
